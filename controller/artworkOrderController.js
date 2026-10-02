@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const ArtworkOrder = require("../models/artworkOrderModel");
+const Order = require("../models/orderModel");
 const Photographer = require("../models/photographerModel");
 const LayoutContent = require("../models/layoutContentModel");
 const UserType = require("../models/typeModel");
@@ -329,43 +330,91 @@ const createOrder = asyncHandler(async (req, res) => {
 
 const getAllOrders = asyncHandler(async (req, res) => {
   const { pageNumber = 1, pageSize = 20 } = req.query;
+  const page = Math.max(1, parseInt(pageNumber) || 1);
+  const limit = Math.max(1, parseInt(pageSize) || 20);
+  const skip = (page - 1) * limit;
 
-  const orders = await ArtworkOrder.find({})
-    .populate({
-      path: "orderItems",
-      populate: [
-        {
-          path: "imageInfo.image",
-          populate: {
-            path: "photographer",
-          },
-        },
-        {
-          path: "frameInfo.frame",
-        },
-        {
-          path: "paperInfo.paper",
-        },
-        {
-          path: "imageInfo.photographer",
-        },
-        {
-          path: "mountInfo.mount",
-        },
-      ],
-    })
-    .populate("userInfo.user")
-    .sort({ createdAt: -1 })
-    .skip((pageNumber - 1) * pageSize)
-    .limit(pageSize);
+  // Check if any orders exist in ArtworkOrder model
+  const artworkOrderCount = await ArtworkOrder.countDocuments({});
 
-  if (!orders || orders.length === 0)
-    return res.status(400).send({ message: "ArtworkOrder not found" });
+  let orders = [];
+  let totalDocuments = 0;
 
-  const totalDocuments = await ArtworkOrder.countDocuments({});
-  const pageCount = Math.ceil(totalDocuments / pageSize);
+  if (artworkOrderCount > 0) {
+    [orders, totalDocuments] = await Promise.all([
+      ArtworkOrder.find({})
+        .populate({
+          path: "orderItems",
+          populate: [
+            {
+              path: "imageInfo.image",
+              populate: {
+                path: "photographer",
+              },
+            },
+            {
+              path: "frameInfo.frame",
+            },
+            {
+              path: "paperInfo.paper",
+            },
+            {
+              path: "imageInfo.photographer",
+            },
+            {
+              path: "mountInfo.mount",
+            },
+          ],
+        })
+        .populate("userInfo.user")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      ArtworkOrder.countDocuments({}),
+    ]);
+  } else {
+    // Orders are stored in the unified Order model with orderItems.imageInfo.imageModel === "Artwork"
+    const query = {
+      "orderItems.imageInfo.imageModel": "Artwork",
+      printStatus: { $ne: "no-print" },
+    };
 
-  res.status(200).send({ orders, pageCount });
+    [orders, totalDocuments] = await Promise.all([
+      Order.find(query)
+        .populate({
+          path: "orderItems",
+          populate: [
+            {
+              path: "imageInfo.image",
+              populate: {
+                path: "photographer",
+              },
+            },
+            {
+              path: "frameInfo.frame",
+            },
+            {
+              path: "paperInfo.paper",
+            },
+            {
+              path: "imageInfo.photographer",
+            },
+            {
+              path: "mountInfo.mount",
+            },
+          ],
+        })
+        .populate("userInfo.user")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      Order.countDocuments(query),
+    ]);
+  }
+
+  const pageCount = Math.ceil(totalDocuments / limit) || 1;
+
+  res.status(200).send({ orders: orders || [], pageCount, totalDocuments });
 });
 
 const getFailedOrders = asyncHandler(async (req, res) => {
@@ -552,9 +601,9 @@ const getOrderById = asyncHandler(async (req, res) => {
   const { orderId } = req.query;
 
   if (!orderId)
-    return res.status(400).send({ message: "ArtworkOrder Id is required" });
+    return res.status(400).send({ message: "Order Id is required" });
 
-  const order = await ArtworkOrder.findById(orderId)
+  let order = await ArtworkOrder.findById(orderId)
     .populate({
       path: "orderItems",
       populate: [
@@ -581,6 +630,40 @@ const getOrderById = asyncHandler(async (req, res) => {
       ],
     })
     .populate("userInfo.user");
+
+  if (!order) {
+    order = await Order.findById(orderId)
+      .populate({
+        path: "orderItems",
+        populate: [
+          {
+            path: "imageInfo.image",
+            select:
+              "imageLinks.thumbnail photographer resolutions title description story keywords category photographer license price location cameraDetails featuredArtwork notForSale",
+            populate: {
+              path: "photographer",
+            },
+          },
+          {
+            path: "frameInfo.frame",
+          },
+          {
+            path: "paperInfo.paper",
+          },
+          {
+            path: "imageInfo.photographer",
+          },
+          {
+            path: "mountInfo.mount",
+          },
+        ],
+      })
+      .populate("userInfo.user");
+  }
+
+  if (!order) {
+    return res.status(404).send({ message: "Order not found" });
+  }
 
   res.status(200).send({ order });
 });
@@ -1452,28 +1535,41 @@ const calculateCartPrice = async (req, res) => {
 const updatePrintStatus = asyncHandler(async (req, res) => {
   const { orderId, printStatus } = req.body;
 
-  const order = await ArtworkOrder.findOne({ _id: orderId });
+  let order = await ArtworkOrder.findOne({ _id: orderId });
+  if (!order) {
+    order = await Order.findOne({ _id: orderId });
+  }
+
+  if (!order) {
+    return res.status(404).send({ message: "Order not found" });
+  }
 
   order.printStatus = printStatus;
 
   await order.save();
 
-  await sendNotificationToUser({
-    userId: order.userInfo.user,
-    userType: order.userInfo.userType,
-    title: "Print Status Updated",
-    body: `Your order is now: ${
-      printStatus?.slice(0, 1).toUpperCase() + printStatus?.slice(1)
-    }`,
-    type: "order",
-    data: {
-      url: `${
-        order.userInfo.userType === "User" ? "clickedart" : "clickedartartist"
-      }://${printStatus === "no-print" ? "digitalorder" : "printorder"}/${
-        order._id
-      }`,
-    },
-  });
+  try {
+    if (order.userInfo?.user) {
+      await sendNotificationToUser({
+        userId: order.userInfo.user,
+        userType: order.userInfo.userType || "User",
+        title: "Print Status Updated",
+        body: `Your order is now: ${
+          printStatus?.slice(0, 1).toUpperCase() + printStatus?.slice(1)
+        }`,
+        type: "order",
+        data: {
+          url: `${
+            order.userInfo.userType === "User" ? "clickedart" : "clickedartartist"
+          }://${printStatus === "no-print" ? "digitalorder" : "printorder"}/${
+            order._id
+          }`,
+        },
+      });
+    }
+  } catch (err) {
+    console.error("Notification error:", err.message);
+  }
 
   res.status(200).send({ message: "Print Status updated successfully" });
 });
@@ -1482,17 +1578,30 @@ const updateReadyToShipStatus = asyncHandler(async (req, res) => {
   const { orderId, status = false } = req.body;
 
   if (!orderId) {
-    return res.status(400).send({ message: "ArtworkOrder Id not found" });
+    return res.status(400).send({ message: "Order Id not found" });
   }
   let readyToShipTimeStamp;
   if (status === true) {
     readyToShipTimeStamp = new Date();
   }
 
-  await ArtworkOrder.findOneAndUpdate(
+  let updated = await ArtworkOrder.findOneAndUpdate(
     { _id: orderId },
-    { readyToShip: status, readyToShipTimeStamp }
+    { readyToShip: status, readyToShipTimeStamp },
+    { new: true }
   );
+
+  if (!updated) {
+    updated = await Order.findOneAndUpdate(
+      { _id: orderId },
+      { readyToShip: status, readyToShipTimeStamp },
+      { new: true }
+    );
+  }
+
+  if (!updated) {
+    return res.status(404).send({ message: "Order not found" });
+  }
 
   res
     .status(200)

@@ -1101,6 +1101,73 @@ const sendWeeklyMailToNonMonetizedPhotographers = asyncHandler(
   },
 );
 
+const sendStoreUserWelcomeEmail = asyncHandler(
+  async ({ name, email, tempPassword, loginUrl }) => {
+    const targetLoginUrl =
+      loginUrl || process.env.CLIENT_URL || "https://www.clickedart.com/signin";
+
+    const textContent = `Hello ${name || "Customer"},
+
+Your ClickedArt account has been created successfully.
+
+Login Email: ${email}
+Temporary Password: ${tempPassword}
+
+Login here: ${targetLoginUrl}
+
+For security, please change your password after your first login.
+
+Regards,
+Team ClickedArt
+www.clickedart.com
+support@clickedart.com
+Empowering Photographers Everywhere
+`;
+
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; rounded: 8px;">
+        <h2 style="color: #0f172a; margin-top: 0;">Your ClickedArt Account Has Been Created</h2>
+        <p>Hello <strong>${name || "Customer"}</strong>,</p>
+        <p>Your ClickedArt account has been created successfully from our store.</p>
+        
+        <div style="background-color: #f8fafc; border-left: 4px solid #4f46e5; padding: 16px; margin: 20px 0; border-radius: 4px;">
+          <p style="margin: 0 0 8px 0;"><strong>Login Email:</strong> ${email}</p>
+          <p style="margin: 0;"><strong>Temporary Password:</strong> <code style="font-size: 16px; font-weight: bold; background: #e0e7ff; color: #3730a3; padding: 2px 6px; border-radius: 4px;">${tempPassword}</code></p>
+        </div>
+
+        <p style="margin: 24px 0;">
+          <a href="${targetLoginUrl}" target="_blank" style="background-color: #4f46e5; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
+            Login to Your Account
+          </a>
+        </p>
+
+        <p style="font-size: 13px; color: #64748b;">
+          <strong>Security Notice:</strong> For security reasons, please change your temporary password after your first login.
+        </p>
+
+        <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+
+        <p style="font-size: 13px; color: #64748b; margin: 0;">
+          Warm Regards,<br />
+          <strong>Team ClickedArt</strong><br />
+          <a href="https://www.clickedart.com" target="_blank" style="color: #4f46e5;">www.clickedart.com</a> | support@clickedart.com<br />
+          <em>Empowering Photographers Everywhere</em>
+        </p>
+      </div>
+    `;
+
+    await transporter.sendMail({
+      from: `Clicked Art <${process.env.USER_EMAIL}>`,
+      to: email,
+      subject: "Your ClickedArt Account Has Been Created",
+      text: textContent,
+      html: htmlContent,
+    });
+
+    return true;
+  },
+);
+
 module.exports = {
   sendResetEmail,
   verifyTransporter,
@@ -1123,4 +1190,5 @@ module.exports = {
   sendStoryPublishedMail,
   sendWeeklyMailToInactivePhotographers,
   sendWeeklyMailToNonMonetizedPhotographers,
+  sendStoreUserWelcomeEmail,
 };

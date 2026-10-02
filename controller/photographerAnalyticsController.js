@@ -1,5 +1,6 @@
 const Photographer = require('../models/photographerModel.js')
 const ImageVault = require('../models/imagebase/imageVaultModel.js')
+const Artwork = require('../models/artworkModel.js')
 const Order = require('../models/orderModel.js')
 const asyncHandler = require('express-async-handler')
 const mongoose = require('mongoose')
@@ -38,6 +39,47 @@ async function getTotalViewsByPhotographer(photographerId) {
   return result.length > 0 ? result[0].totalViews : 0;
 }
 
+async function getPhotographerImageIds(photographer) {
+  const [ivIds, artIds] = await Promise.all([
+    ImageVault.find({ photographer }).distinct('_id'),
+    Artwork.find({ $or: [{ photographer }, { artist: photographer }] }).distinct('_id')
+  ]);
+  return [...ivIds, ...artIds].map(id => id.toString());
+}
+
+async function getPhotographerOrdersQuery(photographer, extraFilter = {}) {
+  const allPhotogIds = await getPhotographerImageIds(photographer);
+  const photogObjectId = mongoose.Types.ObjectId.isValid(photographer)
+    ? new mongoose.Types.ObjectId(photographer)
+    : photographer;
+
+  const query = {
+    isPaid: true,
+    orderStatus: 'completed',
+    $or: [
+      { 'orderItems.imageInfo.photographer': photogObjectId },
+      { 'orderItems.imageInfo.image': { $in: allPhotogIds.map(id => new mongoose.Types.ObjectId(id)) } },
+      { 'orderItems.product': { $in: allPhotogIds.map(id => new mongoose.Types.ObjectId(id)) } },
+      { 'items.product': { $in: allPhotogIds.map(id => new mongoose.Types.ObjectId(id)) } }
+    ],
+    ...extraFilter
+  };
+
+  return { query, allPhotogIds };
+}
+
+function isItemForPhotographer(orderItem, photographerStr, allPhotogIds) {
+  const itemPhotog = orderItem.imageInfo?.photographer?.toString();
+  const itemImg = orderItem.imageInfo?.image?.toString();
+  const itemProd = orderItem.product?.toString();
+
+  return (
+    (itemPhotog && itemPhotog === photographerStr) ||
+    (itemImg && allPhotogIds.includes(itemImg)) ||
+    (itemProd && allPhotogIds.includes(itemProd))
+  );
+}
+
 
 const photographerDashboardData = asyncHandler(async (req, res) => {
   const { photographer } = req.query;
@@ -45,11 +87,9 @@ const photographerDashboardData = asyncHandler(async (req, res) => {
   const totalUploadingImgCount = await ImageVault.countDocuments({ photographer, isActive: true });
   const pendingImagesCount = await ImageVault.countDocuments({ photographer, exclusiveLicenseStatus: { $in: ['pending', 'review'] } , isActive: false   });
   const totalViews = await getTotalViewsByPhotographer(photographer)
-  const orders = await Order.find({
-      isPaid: true,
-      orderStatus: 'completed',
-      'orderItems.imageInfo.photographer': new mongoose.Types.ObjectId(photographer),
-  });
+  
+  const { query, allPhotogIds } = await getPhotographerOrdersQuery(photographer);
+  const orders = await Order.find(query);
   
   if (!orders || orders.length === 0) {
       return res.json({
@@ -59,6 +99,7 @@ const photographerDashboardData = asyncHandler(async (req, res) => {
           totalSales: 0,
           totalRoyaltyAmount: 0,
           totalPrintCutAmount: 0,
+          totalPrintSales: 0,
           monthlyData: [],
           totalViews
       });
@@ -114,31 +155,51 @@ const photographerDashboardData = asyncHandler(async (req, res) => {
       invoiceStatus: 'unpaid', 
   }));
   
+  const photogStr = photographer.toString();
   orders.forEach(order => {
-      downloads += 1;
-      order.orderItems.forEach(orderItem => {
-          const price = orderItem.imageInfo?.price || 0;
-          const royalty = price * (royaltyShare / 100);
-          const printCut = (orderItem.subTotal * printRoyaltyShare) / 100 || 0;
-          const orderMonth = new Date(order.createdAt).getMonth();
-          const subTotal = orderItem.subTotal || 0;
-          totalPrintSales += subTotal;
-          totalSales += price;
-          totalRoyaltyAmount += royalty;
-          totalPrintCutAmount += printCut;
+      let orderHasPhotogItem = false;
+      const items = order.orderItems && order.orderItems.length ? order.orderItems : (order.items || []);
+      items.forEach(orderItem => {
+          if (!isItemForPhotographer(orderItem, photogStr, allPhotogIds)) {
+              return;
+          }
+          orderHasPhotogItem = true;
+          const isPrint = !!orderItem.printType || !!(orderItem.paperInfo && orderItem.paperInfo.paper) || !!(orderItem.frameInfo && orderItem.frameInfo.frame) || !!orderItem.product || !!orderItem.paper || orderItem.imageInfo?.imageModel === 'Artwork';
+          
+          let price = 0;
+          let royalty = 0;
+          let subTotal = 0;
+          let printCut = 0;
 
-         if(price > 0) {
-            totalDigitalDownloads += 1
-         } else if ( subTotal > 0 ) {
-            totalPrintDownloads += 1
-         }
+          if (isPrint) {
+              subTotal = Number(orderItem.subTotal ?? orderItem.finalPrice ?? orderItem.total ?? 0);
+              printCut = (subTotal * printRoyaltyShare) / 100 || 0;
+              totalPrintSales += subTotal;
+              totalPrintCutAmount += printCut;
+              if (subTotal >= 0) {
+                  totalPrintDownloads += 1;
+              }
+          } else {
+              price = Number(orderItem.imageInfo?.price || orderItem.subTotal || orderItem.finalPrice || orderItem.total || 0);
+              royalty = price * (royaltyShare / 100);
+              totalSales += price;
+              totalRoyaltyAmount += royalty;
+              if (price >= 0) {
+                  totalDigitalDownloads += 1;
+              }
+          }
+
+          const orderMonth = new Date(order.createdAt).getMonth();
          const tds = isNaN(royalty) || isNaN(printCut) ? 0 : (royalty + printCut) * 0.1;
 
           monthlyData[orderMonth].sales += price;
           monthlyData[orderMonth].royaltyAmount += royalty;
           monthlyData[orderMonth].printCutAmount += printCut;
-          monthlyData[orderMonth].tds += tds
+          monthlyData[orderMonth].tds += tds;
        });
+       if (orderHasPhotogItem) {
+          downloads += 1;
+       }
   });
 
   for (let data of monthlyData) {
@@ -229,8 +290,23 @@ const photographerDashboardData = asyncHandler(async (req, res) => {
     .populate('orderDetails.image')
     
   const activeBuyers = await Order.aggregate([
-        { $match: { orderStatus: 'completed', isPaid: true, 'orderItems.imageInfo.photographer': new mongoose.Types.ObjectId(photographer) } },  
-        { $group: { _id: "$userInfo.user" } },  
+        {
+          $match: {
+            orderStatus: 'completed',
+            isPaid: true,
+            $or: [
+              { 'orderItems.imageInfo.photographer': new mongoose.Types.ObjectId(photographer) },
+              { 'orderItems.imageInfo.image': { $in: allPhotogIds.map(id => new mongoose.Types.ObjectId(id)) } },
+              { 'orderItems.product': { $in: allPhotogIds.map(id => new mongoose.Types.ObjectId(id)) } },
+              { 'items.product': { $in: allPhotogIds.map(id => new mongoose.Types.ObjectId(id)) } }
+            ]
+          }
+        },  
+        {
+          $group: {
+            _id: { $ifNull: ["$userInfo.user", "$customer.phone", "$customer.email", "$_id"] }
+          }
+        },  
         { $count: "activeBuyers" },  
     ]);
 
@@ -282,15 +358,10 @@ const customPhotographerRevenueData  = asyncHandler(async (req, res) => {
     const start = new Date(new Date(startDate).setHours(0, 0, 0, 0)); 
     const end = new Date(new Date(endDate).setHours(23, 59, 59, 999)); 
 
-
-    const orders = await Order.find({
-        isPaid: true,
-        orderStatus: 'completed',
-        'orderItems.imageInfo.photographer': new mongoose.Types.ObjectId(photographer),
+    const { query, allPhotogIds } = await getPhotographerOrdersQuery(photographer, {
         createdAt: { $gte: start, $lte: end }
     });
-
-
+    const orders = await Order.find(query);
     
     let totalSales = 0;
     let totalPrintSales = 0;
@@ -325,31 +396,47 @@ const customPhotographerRevenueData  = asyncHandler(async (req, res) => {
         royaltyShare = 50;
     }
   
-
+    const photogStr = photographer.toString();
     orders.forEach(order => {
-        downloads += 1;
-        order.orderItems.forEach(orderItem => {
-            const price = orderItem.imageInfo?.price || 0;
-            const royalty = price * (royaltyShare / 100);
-            const printCut = (orderItem.subTotal * printRoyaltyShare) / 100 || 0;
-            const subTotal = orderItem.subTotal || 0;
-            totalPrintSales += subTotal;
-            totalSales += price;
-            totalRoyaltyAmount += royalty;
-            totalPrintCutAmount += printCut;
-  
-           if(price > 0) {
-              totalDigitalDownloads += 1
-           } else if ( subTotal > 0 ) {
-              totalPrintDownloads += 1
-           }
-  
+        let orderHasPhotogItem = false;
+        const items = order.orderItems && order.orderItems.length ? order.orderItems : (order.items || []);
+        items.forEach(orderItem => {
+            if (!isItemForPhotographer(orderItem, photogStr, allPhotogIds)) {
+                return;
+            }
+            orderHasPhotogItem = true;
+            const isPrint = !!orderItem.printType || !!(orderItem.paperInfo && orderItem.paperInfo.paper) || !!(orderItem.frameInfo && orderItem.frameInfo.frame) || !!orderItem.product || !!orderItem.paper || orderItem.imageInfo?.imageModel === 'Artwork';
+            
+            let price = 0;
+            let royalty = 0;
+            let subTotal = 0;
+            let printCut = 0;
+
+            if (isPrint) {
+                subTotal = Number(orderItem.subTotal ?? orderItem.finalPrice ?? orderItem.total ?? 0);
+                printCut = (subTotal * printRoyaltyShare) / 100 || 0;
+                totalPrintSales += subTotal;
+                totalPrintCutAmount += printCut;
+                if (subTotal >= 0) {
+                    totalPrintDownloads += 1;
+                }
+            } else {
+                price = Number(orderItem.imageInfo?.price || orderItem.subTotal || orderItem.finalPrice || orderItem.total || 0);
+                royalty = price * (royaltyShare / 100);
+                totalSales += price;
+                totalRoyaltyAmount += royalty;
+                if (price >= 0) {
+                    totalDigitalDownloads += 1;
+                }
+            }
         });
+        if (orderHasPhotogItem) {
+            downloads += 1;
+        }
     });
   
     const startOfDay = new Date(new Date(startDate).setHours(0, 0, 0, 0)); 
     const endOfDay = new Date(new Date(endDate).setHours(23, 59, 59, 999)); 
-
 
     const referralBalance = await ReferralBalance.aggregate([
         {
@@ -371,19 +458,16 @@ const customPhotographerRevenueData  = asyncHandler(async (req, res) => {
 
       const totalReferralAmount = referralBalance.length > 0 ? referralBalance[0].price : 0;
 
-
     res.status(200).send({
-        totalSales,
-        totalPrintSales,
-        totalRoyaltyAmount,
-        totalPrintCutAmount,
+        totalSales: parseFloat(totalSales?.toFixed(2)),
+        totalPrintSales: parseFloat(totalPrintSales?.toFixed(2)),
+        totalRoyaltyAmount: parseFloat(totalRoyaltyAmount?.toFixed(2)),
+        totalPrintCutAmount: parseFloat(totalPrintCutAmount?.toFixed(2)),
         downloads,
         totalPrintDownloads,
         totalDigitalDownloads,
         totalReferralAmount
     })
-
-   
 })
 
 
@@ -391,18 +475,13 @@ const revenueForCurrentMonth = asyncHandler(async (req, res) => {
     const photographer = req.query.photographer;
 
     const currentDate = new Date();
-    
     const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
-    
-
     const endOfMonth = new Date(currentDate);
 
-    const orders = await Order.find({
-        isPaid: true,
-        orderStatus: 'completed',
-        'orderItems.imageInfo.photographer': new mongoose.Types.ObjectId(photographer),
+    const { query, allPhotogIds } = await getPhotographerOrdersQuery(photographer, {
         createdAt: { $gte: startOfMonth, $lte: endOfMonth }
     });
+    const orders = await Order.find(query);
 
     let totalSales = 0;
     let totalPrintSales = 0;
@@ -437,31 +516,50 @@ const revenueForCurrentMonth = asyncHandler(async (req, res) => {
         royaltyShare = 50;
     }
 
+    const photogStr = photographer.toString();
     orders.forEach(order => {
-        downloads += 1;
-        order.orderItems.forEach(orderItem => {
-            const price = orderItem.imageInfo?.price || 0;
-            const royalty = price * (royaltyShare / 100);
-            const printCut = (orderItem.subTotal * printRoyaltyShare) / 100 || 0;
-            const subTotal = orderItem.subTotal || 0;
-            totalPrintSales += subTotal;
-            totalSales += price;
-            totalRoyaltyAmount += royalty;
-            totalPrintCutAmount += printCut;
+        let orderHasPhotogItem = false;
+        const items = order.orderItems && order.orderItems.length ? order.orderItems : (order.items || []);
+        items.forEach(orderItem => {
+            if (!isItemForPhotographer(orderItem, photogStr, allPhotogIds)) {
+                return;
+            }
+            orderHasPhotogItem = true;
+            const isPrint = !!orderItem.printType || !!(orderItem.paperInfo && orderItem.paperInfo.paper) || !!(orderItem.frameInfo && orderItem.frameInfo.frame) || !!orderItem.product || !!orderItem.paper || orderItem.imageInfo?.imageModel === 'Artwork';
+            
+            let price = 0;
+            let royalty = 0;
+            let subTotal = 0;
+            let printCut = 0;
 
-            if (price > 0) {
-                totalDigitalDownloads += 1;
-            } else if (subTotal > 0) {
-                totalPrintDownloads += 1;
+            if (isPrint) {
+                subTotal = Number(orderItem.subTotal ?? orderItem.finalPrice ?? orderItem.total ?? 0);
+                printCut = (subTotal * printRoyaltyShare) / 100 || 0;
+                totalPrintSales += subTotal;
+                totalPrintCutAmount += printCut;
+                if (subTotal >= 0) {
+                    totalPrintDownloads += 1;
+                }
+            } else {
+                price = Number(orderItem.imageInfo?.price || orderItem.subTotal || orderItem.finalPrice || orderItem.total || 0);
+                royalty = price * (royaltyShare / 100);
+                totalSales += price;
+                totalRoyaltyAmount += royalty;
+                if (price >= 0) {
+                    totalDigitalDownloads += 1;
+                }
             }
         });
+        if (orderHasPhotogItem) {
+            downloads += 1;
+        }
     });
 
     res.status(200).send({
-        totalSales,
-        totalPrintSales,
-        totalRoyaltyAmount,
-        totalPrintCutAmount,
+        totalSales: parseFloat(totalSales?.toFixed(2)),
+        totalPrintSales: parseFloat(totalPrintSales?.toFixed(2)),
+        totalRoyaltyAmount: parseFloat(totalRoyaltyAmount?.toFixed(2)),
+        totalPrintCutAmount: parseFloat(totalPrintCutAmount?.toFixed(2)),
         downloads,
         totalPrintDownloads,
         totalDigitalDownloads
@@ -472,24 +570,18 @@ const revenueForCurrentMonth = asyncHandler(async (req, res) => {
 
 const revenueForCurrentFiscalYear = asyncHandler(async (req, res) => {
     const photographer = req.query.photographer;
-
-    
     const currentDate = new Date();
     
     let fiscalYearStart = new Date(currentDate.getFullYear(), 3, 1);  
-    
     if (currentDate.getMonth() < 3) {
         fiscalYearStart = new Date(currentDate.getFullYear() - 1, 3, 1);
     }
-
     const fiscalYearEnd = new Date(currentDate);
 
-    const orders = await Order.find({
-        isPaid: true,
-        orderStatus: 'completed',
-        'orderItems.imageInfo.photographer': new mongoose.Types.ObjectId(photographer),
+    const { query, allPhotogIds } = await getPhotographerOrdersQuery(photographer, {
         createdAt: { $gte: fiscalYearStart, $lte: fiscalYearEnd }
     });
+    const orders = await Order.find(query);
 
     let totalSales = 0;
     let totalPrintSales = 0;
@@ -524,31 +616,50 @@ const revenueForCurrentFiscalYear = asyncHandler(async (req, res) => {
         royaltyShare = 50;
     }
 
+    const photogStr = photographer.toString();
     orders.forEach(order => {
-        downloads += 1;
-        order.orderItems.forEach(orderItem => {
-            const price = orderItem.imageInfo?.price || 0;
-            const royalty = price * (royaltyShare / 100);
-            const printCut = (orderItem.subTotal * printRoyaltyShare) / 100 || 0;
-            const subTotal = orderItem.subTotal || 0;
-            totalPrintSales += subTotal;
-            totalSales += price;
-            totalRoyaltyAmount += royalty;
-            totalPrintCutAmount += printCut;
+        let orderHasPhotogItem = false;
+        const items = order.orderItems && order.orderItems.length ? order.orderItems : (order.items || []);
+        items.forEach(orderItem => {
+            if (!isItemForPhotographer(orderItem, photogStr, allPhotogIds)) {
+                return;
+            }
+            orderHasPhotogItem = true;
+            const isPrint = !!orderItem.printType || !!(orderItem.paperInfo && orderItem.paperInfo.paper) || !!(orderItem.frameInfo && orderItem.frameInfo.frame) || !!orderItem.product || !!orderItem.paper || orderItem.imageInfo?.imageModel === 'Artwork';
+            
+            let price = 0;
+            let royalty = 0;
+            let subTotal = 0;
+            let printCut = 0;
 
-            if (price > 0) {
-                totalDigitalDownloads += 1;
-            } else if (subTotal > 0) {
-                totalPrintDownloads += 1;
+            if (isPrint) {
+                subTotal = Number(orderItem.subTotal ?? orderItem.finalPrice ?? orderItem.total ?? 0);
+                printCut = (subTotal * printRoyaltyShare) / 100 || 0;
+                totalPrintSales += subTotal;
+                totalPrintCutAmount += printCut;
+                if (subTotal >= 0) {
+                    totalPrintDownloads += 1;
+                }
+            } else {
+                price = Number(orderItem.imageInfo?.price || orderItem.subTotal || orderItem.finalPrice || orderItem.total || 0);
+                royalty = price * (royaltyShare / 100);
+                totalSales += price;
+                totalRoyaltyAmount += royalty;
+                if (price >= 0) {
+                    totalDigitalDownloads += 1;
+                }
             }
         });
+        if (orderHasPhotogItem) {
+            downloads += 1;
+        }
     });
 
     res.status(200).send({
-        totalSales,
-        totalPrintSales,
-        totalRoyaltyAmount,
-        totalPrintCutAmount,
+        totalSales: parseFloat(totalSales?.toFixed(2)),
+        totalPrintSales: parseFloat(totalPrintSales?.toFixed(2)),
+        totalRoyaltyAmount: parseFloat(totalRoyaltyAmount?.toFixed(2)),
+        totalPrintCutAmount: parseFloat(totalPrintCutAmount?.toFixed(2)),
         downloads,
         totalPrintDownloads,
         totalDigitalDownloads

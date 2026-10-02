@@ -17,6 +17,7 @@ const subscriptionRoutes = require("./routes/subscriptionRoutes.js");
 const paperRoutes = require("./routes/imagebase/paperRoutes.js");
 const licenseRoutes = require("./routes/imagebase/licenseRoutes.js");
 const frameRoutes = require("./routes/imagebase/frameRoutes.js");
+const floaterFrameRoutes = require("./routes/imagebase/floaterFrameRoutes.js");
 const mountRoutes = require("./routes/imagebase/mountRoutes.js");
 const downloadRoutes = require("./routes/downloadRoutes.js");
 const invoiceRoutes = require("./routes/invoiceRoutes.js");
@@ -49,6 +50,7 @@ const upload = require("./routes/upload");
 const artworkRoutes = require("./routes/artworkRoutes");
 const artworkCategoryRoutes = require("./routes/artworkCategoryRoutes");
 const artworkOrderRoutes = require("./routes/artworkOrderRoutes");
+const storeRoutes = require("./routes/storeRoutes");
 const cron = require("node-cron");
 const {
   checkAndUpdateSubscriptions,
@@ -78,6 +80,7 @@ app.use(
 app.use(express.json());
 app.use("/api/upload", upload);
 app.use("/api/user", userRoutes);
+app.use("/api/users", userRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/photographer", photographerRoutes);
 app.use("/api/category", categoryRoutes);
@@ -89,6 +92,7 @@ app.use("/api/follow", followRoutes);
 app.use("/api/plans", planRoutes);
 app.use("/api/subscriptions", subscriptionRoutes);
 app.use("/api/frames", frameRoutes);
+app.use("/api/floater-frames", floaterFrameRoutes);
 app.use("/api/mount", mountRoutes);
 app.use("/api/paper", paperRoutes);
 app.use("/api/download", downloadRoutes);
@@ -123,6 +127,7 @@ app.use("/api/privacy-policy", privacyPolicyRoutes);
 app.use("/api/artworks", artworkRoutes);
 app.use("/api/artwork-category", artworkCategoryRoutes);
 app.use("/api/artwork-orders", artworkOrderRoutes);
+app.use("/api/store", storeRoutes);
 app.use("/api/test", (req, res) => {
   res.status(200).json({ message: "Test route is working!" });
 });
@@ -188,3 +193,4 @@ app.listen(PORT, () => {
   console.log(`Successfully served on port: ${PORT}.`);
 // Restart nodemon comment 2
 });
+ 

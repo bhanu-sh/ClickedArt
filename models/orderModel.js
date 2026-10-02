@@ -6,12 +6,12 @@ const orderSchema = new mongoose.Schema(
       user: {
         type: mongoose.Schema.Types.ObjectId,
         refPath: "userInfo.userType",
-        required: true,
+        required: false,
       },
       userType: {
         type: String,
         enum: ["User", "Photographer"],
-        required: true,
+        required: false,
       },
     },
     orderItems: [
@@ -24,7 +24,7 @@ const orderSchema = new mongoose.Schema(
           imageModel: {
             type: String,
             enum: ["ImageVault", "Artwork"],
-            default: "ImageVault"
+            default: "ImageVault",
           },
           photographer: {
             type: mongoose.Schema.Types.ObjectId,
@@ -103,7 +103,7 @@ const orderSchema = new mongoose.Schema(
         },
         subTotal: {
           type: Number,
-          required: true,
+          required: false,
         },
         initialSubTotal: {
           type: Number,
@@ -120,6 +120,24 @@ const orderSchema = new mongoose.Schema(
         totalGST: {
           type: Number,
         },
+        // Store item compatibility fields
+        product: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "StoreProduct",
+        },
+        name: { type: String },
+        sku: { type: String },
+        image: { type: String },
+        quantity: { type: Number, default: 1 },
+        unitPrice: { type: Number },
+        discount: { type: Number },
+        total: { type: Number },
+        printType: { type: String },
+        paper: { type: String },
+        size: { type: String },
+        frame: { type: String },
+        mount: { type: String },
+        floaterFrame: { type: String },
       },
     ],
     gst: {
@@ -128,7 +146,14 @@ const orderSchema = new mongoose.Schema(
     },
     orderStatus: {
       type: String,
-      enum: ["pending", "completed", "cancelled", "failed"],
+      enum: [
+        "pending",
+        "processing",
+        "ready_for_pickup",
+        "completed",
+        "cancelled",
+        "failed",
+      ],
       default: "pending",
     },
     printStatus: {
@@ -157,13 +182,73 @@ const orderSchema = new mongoose.Schema(
     invoiceNumber: {
       type: String,
     },
+    orderNumber: {
+      type: String,
+      index: true,
+    },
+    orderSource: {
+      type: String,
+      enum: ["ONLINE", "STORE", "online", "store"],
+      default: "ONLINE",
+      uppercase: true,
+      index: true,
+    },
+    store: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Store",
+      index: true,
+    },
+    customer: {
+      name: { type: String, default: "Walk-in Customer" },
+      email: { type: String, default: "" },
+      phone: { type: String, default: "" },
+      address: {
+        street: { type: String, default: "" },
+        city: { type: String, default: "" },
+        state: { type: String, default: "" },
+        pincode: { type: String, default: "" },
+        country: { type: String, default: "India" },
+      },
+      gst: { type: String, default: "" },
+    },
+    items: [],
+    subtotal: {
+      type: Number,
+    },
+    coupon: {
+      type: mongoose.Schema.Types.Mixed,
+    },
+    priceAdjustment: {
+      type: Number,
+      default: 0,
+    },
+    discountTotal: {
+      type: Number,
+      default: 0,
+    },
+    taxableAmount: {
+      type: Number,
+      default: 0,
+    },
+    taxTotal: {
+      type: Number,
+      default: 0,
+    },
+    notes: {
+      type: String,
+      default: "",
+    },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "StoreUser",
+    },
     totalAmount: {
       type: Number,
       required: true,
     },
     finalAmount: {
       type: Number,
-      required: true,
+      required: false,
     },
     discount: {
       type: Number,

@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const Order = require("../models/orderModel");
 const Photographer = require("../models/photographerModel");
 const LayoutContent = require("../models/layoutContentModel");
+const Store = require("../models/storeModel");
 const UserType = require("../models/typeModel");
 const asyncHandler = require("express-async-handler");
 const ImageVault = require("../models/imagebase/imageVaultModel");
@@ -27,6 +28,8 @@ const {
   sendNotificationToUser,
 } = require("../middleware/notificationUtils.js");
 const { default: axios } = require("axios");
+const validator = require("validator");
+const bcrypt = require("bcrypt");
 
 const getCounter = async (financialYear) => {
   const counterDoc = await BuyerCounter.findOne({ financialYear }).sort({
@@ -61,6 +64,166 @@ const deleteOrder = asyncHandler(async (req, res) => {
 });
 
 const createOrder = asyncHandler(async (req, res) => {
+  const incomingSource = (
+    req.body.orderSource ||
+    (req.body.userInfo && !req.body.userId ? "STORE" : "ONLINE")
+  ).toUpperCase();
+
+  // If order source is STORE, store it in the exact same structure as an online order
+  // The only difference is orderSource:"store"
+  if (incomingSource === "STORE") {
+    const {
+      userInfo: storeUserInfo,
+      orderItems: storeOrderItems,
+      paymentMethod = "cash",
+      shippingAddress: storeShippingAddress,
+      discount: storeDiscount,
+      finalAmount: storeFinalAmount,
+      totalAmount: storeTotalAmount,
+      invoiceId: storeInvoiceId,
+      gst: storeGst,
+      printStatus: storePrintStatus,
+      taxableAmount: reqTaxableAmount,
+      cgst: reqCgst,
+      sgst: reqSgst,
+    } = req.body;
+
+    if (!storeOrderItems || !Array.isArray(storeOrderItems) || storeOrderItems.length === 0) {
+      return res.status(400).json({ status: false, message: "Order must contain at least one item" });
+    }
+
+    // Resolve the user from userInfo
+    let resolvedUserId = storeUserInfo?.user;
+    let resolvedUserType = storeUserInfo?.userType || "User";
+
+    if (!resolvedUserId) {
+      return res.status(400).json({ status: false, message: "userInfo.user is required for store orders" });
+    }
+
+    // Validate the user actually exists in the correct model
+    let userDoc = null;
+    if (resolvedUserType === "Photographer") {
+      userDoc = await Photographer.findById(resolvedUserId);
+    } else {
+      userDoc = await User.findById(resolvedUserId);
+    }
+    if (!userDoc) {
+      return res.status(400).json({ status: false, message: "User not found" });
+    }
+
+    const layoutContent = await LayoutContent.findOne({});
+    const isGstActive = layoutContent?.charges?.gst || false;
+
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth();
+    const financialYear =
+      currentMonth < 3
+        ? `${currentYear - 1}-${currentYear.toString().slice(-2)}`
+        : `${currentYear}-${(currentYear + 1).toString().slice(-2)}`;
+
+    let invoiceNumber = req.body.invoiceNumber;
+    if (!invoiceNumber) {
+      try {
+        const nextCounter = await getCounter(financialYear);
+        invoiceNumber = `CAB/${financialYear}/${nextCounter.toString().padStart(4, "0")}`;
+        await incrementCounter(financialYear);
+      } catch (cntErr) {
+        const randomSeq = Math.floor(1000 + Math.random() * 9000);
+        invoiceNumber = `CAB/${financialYear}/${randomSeq}`;
+      }
+    }
+
+    const invoiceId = storeInvoiceId || invoiceNumber;
+
+    // Build order items with GST
+    const updatedItems = storeOrderItems.map((item) => {
+      const finalPrice = item.finalPrice || 0;
+      const sgstItem = isGstActive ? finalPrice * 0.09 : 0;
+      const cgstItem = isGstActive ? finalPrice * 0.09 : 0;
+      const totalGSTItem = sgstItem + cgstItem;
+      return {
+        ...item,
+        sgst: sgstItem,
+        cgst: cgstItem,
+        totalGST: totalGSTItem,
+      };
+    });
+
+    const hasPaper = updatedItems.some((item) => item.paperInfo && item.paperInfo.paper);
+
+    let totalAmount = storeTotalAmount;
+    if (totalAmount == null) {
+      totalAmount = updatedItems.reduce((sum, it) => sum + (it.finalPrice || 0), 0);
+    }
+
+    const totalSgst = updatedItems.reduce((sum, it) => sum + (it.sgst || 0), 0);
+    const totalCgst = updatedItems.reduce((sum, it) => sum + (it.cgst || 0), 0);
+    const totalGSTAmount = totalSgst + totalCgst;
+
+    const computedFinalAmount = storeFinalAmount != null
+      ? storeFinalAmount
+      : Number((totalAmount + totalGSTAmount).toFixed(2));
+
+    const resolvedStoreId =
+      req.storeId ||
+      req.store?._id ||
+      req.body.store ||
+      (await Store.findOne({ status: "active" }))?._id;
+    const resolvedCreatedBy = req.storeUser?._id || req.body.createdBy;
+
+    const newOrder = await Order.create({
+      orderSource: "store",
+      store: resolvedStoreId,
+      createdBy: resolvedCreatedBy,
+      orderNumber: req.body.orderNumber || invoiceNumber,
+      userInfo: { user: resolvedUserId, userType: resolvedUserType },
+      customer: {
+        name:
+          `${userDoc.firstName || ""} ${userDoc.lastName || ""}`.trim() ||
+          userDoc.name ||
+          "Store Customer",
+        email: userDoc.email || "",
+        phone: userDoc.mobile || userDoc.phone || "",
+        address: {
+          street: storeShippingAddress?.address || "Store Purchase",
+          city: storeShippingAddress?.city || "",
+          state: storeShippingAddress?.state || "",
+          pincode: storeShippingAddress?.pincode || "",
+          country: "India",
+        },
+        gst: storeGst || "",
+      },
+      orderItems: updatedItems,
+      paymentMethod,
+      shippingAddress: storeShippingAddress || {},
+      discount: storeDiscount || 0,
+      totalAmount,
+      finalAmount: computedFinalAmount,
+      orderStatus: req.body.orderStatus || "completed",
+      invoiceId,
+      isPaid: true,
+      gst: storeGst || "",
+      printStatus: storePrintStatus || (hasPaper ? "processing" : "delivered"),
+      invoiceNumber,
+      gstCharge: isGstActive,
+      gstChargeAmount: Number(totalGSTAmount.toFixed(2)),
+      sgstAmount: Number(totalSgst.toFixed(2)),
+      cgstAmount: Number(totalCgst.toFixed(2)),
+      deliveryCharge: false,
+      platformFees: false,
+      readyToShip: false,
+    });
+
+    return res.status(201).json({
+      status: true,
+      message: "Store order recorded successfully",
+      order: newOrder,
+    });
+  }
+
+  // --- ONLINE ORDER FLOW (UNCHANGED) ---
+
   const {
     userId,
     orderItems,
@@ -195,6 +358,7 @@ const createOrder = asyncHandler(async (req, res) => {
     const totalGSTAmount = totalSgst + totalCgst;
 
     const order = new Order({
+      orderSource: "ONLINE",
       userInfo: {
         user: userId,
         userType: type,
@@ -505,53 +669,80 @@ const getOrdersByPhotographer = asyncHandler(async (req, res) => {
 });
 
 const updateOrderStatus = asyncHandler(async (req, res) => {
-  const { orderStatus, orderId } = req.body;
+  const orderId = req.body.orderId || req.params.id;
+  const orderStatus = req.body.orderStatus || req.body.newStatus;
+  const { notes } = req.body;
 
   if (!orderStatus || !orderId) {
     res.status(400);
     throw new Error("Order Status and Order Id is required to update");
   }
 
-  const order = await Order.findById(orderId);
-  const validStatusTypes = new Set(["pending", "completed", "cancelled"]);
+  let order = await Order.findById(orderId);
+  if (!order) {
+    res.status(404);
+    throw new Error("Order not found");
+  }
+
+  const validStatusTypes = new Set([
+    "pending",
+    "processing",
+    "ready_for_pickup",
+    "completed",
+    "cancelled",
+    "failed",
+  ]);
+
   if (!validStatusTypes.has(orderStatus)) {
     res.status(400);
     throw new Error("Invalid order status");
   }
 
   order.orderStatus = orderStatus;
+  if (notes) {
+    order.notes = order.notes ? `${order.notes}\n${notes}` : notes;
+  }
 
   if (orderStatus === "cancelled" || orderStatus === "pending") {
     order.isPaid = false;
-  } else {
+  } else if (orderStatus === "completed" || orderStatus === "ready_for_pickup") {
     order.isPaid = true;
   }
 
-  await sendNotificationToUser({
-    userId: order.userInfo.user,
-    userType: order.userInfo.userType,
-    title: `Order Status Updated`,
-    body: `Your order is now: ${orderStatus?.slice(0, 1).toUpperCase() + orderStatus?.slice(1)
+  if (order.userInfo?.user) {
+    await sendNotificationToUser({
+      userId: order.userInfo.user,
+      userType: order.userInfo.userType,
+      title: `Order Status Updated`,
+      body: `Your order is now: ${
+        orderStatus?.slice(0, 1).toUpperCase() + orderStatus?.slice(1)
       }`,
-    type: "order",
-    data: {
-      url: `${order.userInfo.userType === "User" ? "clickedart" : "clickedartartist"
-        }://${order.printStatus === "no-print" ? "digitalorder" : "printorder"}/${order._id
+      type: "order",
+      data: {
+        url: `${
+          order.userInfo.userType === "User" ? "clickedart" : "clickedartartist"
+        }://${order.printStatus === "no-print" ? "digitalorder" : "printorder"}/${
+          order._id
         }`,
-    },
-  });
+      },
+    }).catch((e) => console.log("Notification error:", e.message));
+  }
 
   await order.save();
-  res.status(200).send({ message: "Order status updated" });
+  res.status(200).send({
+    status: true,
+    message: "Order status updated",
+    order,
+  });
 });
 
 const getOrderById = asyncHandler(async (req, res) => {
-  const { orderId } = req.query;
+  const orderId = req.query.orderId || req.params.id;
 
   if (!orderId)
     return res.status(400).send({ message: "Order Id is required" });
 
-  const order = await Order.findById(orderId)
+  let order = await Order.findById(orderId)
     .populate({
       path: "orderItems",
       populate: [
@@ -577,9 +768,156 @@ const getOrderById = asyncHandler(async (req, res) => {
         },
       ],
     })
-    .populate("userInfo.user");
+    .populate("userInfo.user")
+    .populate("store", "name storeCode city state address email phone");
 
-  res.status(200).send({ order });
+  if (!order) {
+    return res.status(404).send({ status: false, message: "Order not found" });
+  }
+
+  const orderObj = order.toObject ? order.toObject() : JSON.parse(JSON.stringify(order));
+
+  // 1. Ensure userInfo.user exists with firstName / lastName
+  if (!orderObj.userInfo?.user?.firstName) {
+    const rawName = (orderObj.customer?.name || orderObj.userInfo?.user?.name || "Walk-in Customer").trim();
+    const parts = rawName.split(/\s+/);
+    const firstName = parts[0] || "Walk-in";
+    const lastName = parts.slice(1).join(" ") || "";
+    orderObj.userInfo = {
+      ...orderObj.userInfo,
+      user: {
+        ...(typeof orderObj.userInfo?.user === "object" ? orderObj.userInfo.user : {}),
+        firstName: orderObj.userInfo?.user?.firstName || firstName,
+        lastName: orderObj.userInfo?.user?.lastName || lastName,
+        email: orderObj.userInfo?.user?.email || orderObj.customer?.email || "",
+        mobile: orderObj.userInfo?.user?.mobile || orderObj.customer?.phone || "",
+      },
+      userType: orderObj.userInfo?.userType || "User",
+    };
+  }
+
+  // 2. Ensure shippingAddress exists
+  if (!orderObj.shippingAddress?.address) {
+    const custAddr = orderObj.customer?.address || {};
+    const isCustAddrObj = typeof custAddr === "object" && custAddr !== null && !Array.isArray(custAddr);
+    const storeAddr = orderObj.store?.address || {};
+
+    const street =
+      (isCustAddrObj ? (custAddr.street || custAddr.address || custAddr.line1) : (typeof custAddr === "string" ? custAddr : "")) ||
+      orderObj.customer?.street ||
+      storeAddr.street ||
+      (orderObj.store?.name ? `${orderObj.store.name}, ${orderObj.store.city || storeAddr.city || ""}` : "Store Purchase");
+
+    const city =
+      (isCustAddrObj ? custAddr.city : "") ||
+      orderObj.customer?.city ||
+      storeAddr.city ||
+      orderObj.store?.city ||
+      "";
+
+    const state =
+      (isCustAddrObj ? custAddr.state : "") ||
+      orderObj.customer?.state ||
+      storeAddr.state ||
+      orderObj.store?.state ||
+      "";
+
+    const pincode =
+      (isCustAddrObj ? custAddr.pincode : "") ||
+      orderObj.customer?.pincode ||
+      storeAddr.pincode ||
+      "";
+
+    const country =
+      (isCustAddrObj ? custAddr.country : "") ||
+      orderObj.customer?.country ||
+      storeAddr.country ||
+      "India";
+
+    const mobile =
+      orderObj.customer?.phone ? Number(String(orderObj.customer.phone).replace(/\D/g, "")) : undefined;
+
+    orderObj.shippingAddress = {
+      address: street,
+      city,
+      state,
+      pincode: String(pincode || ""),
+      country,
+      mobile,
+      email: orderObj.customer?.email || orderObj.store?.email || "",
+      landmark: (isCustAddrObj ? custAddr.landmark : "") || "",
+      area: (isCustAddrObj ? custAddr.area : "") || "",
+    };
+  }
+
+  // 3. Ensure gst at root
+  if (!orderObj.gst && orderObj.customer?.gst) {
+    orderObj.gst = orderObj.customer.gst;
+  }
+
+  // 4. Ensure tax amounts
+  if (orderObj.gstChargeAmount == null && (orderObj.taxTotal > 0 || orderObj.cgst > 0 || orderObj.sgst > 0)) {
+    orderObj.gstChargeAmount = orderObj.taxTotal || ((orderObj.cgst || 0) + (orderObj.sgst || 0));
+    orderObj.cgstAmount = orderObj.cgst || orderObj.gstChargeAmount / 2;
+    orderObj.sgstAmount = orderObj.sgst || orderObj.gstChargeAmount / 2;
+    orderObj.gstCharge = true;
+  }
+
+  // 5. Ensure totalAmount is taxableAmount when tax is separated
+  if (orderObj.gstChargeAmount > 0 && orderObj.taxableAmount > 0 && orderObj.totalAmount === orderObj.finalAmount) {
+    orderObj.totalAmount = orderObj.taxableAmount;
+  }
+
+  // 6. Ensure orderItems fields
+  if (orderObj.orderItems && Array.isArray(orderObj.orderItems)) {
+    orderObj.orderItems = orderObj.orderItems.map((item) => {
+      const it = { ...item };
+      const itemTaxable = it.finalPrice || it.unitPrice || 0;
+      if (it.initialSubTotal == null || it.initialSubTotal === 0) {
+        it.initialSubTotal = it.unitPrice || it.subtotal || (itemTaxable + (it.discount || 0)) || itemTaxable;
+      }
+      if (it.subTotal == null) {
+        it.subTotal = itemTaxable;
+      }
+      if (it.finalPrice == null) {
+        it.finalPrice = itemTaxable;
+      }
+      if (!it.cgst && orderObj.cgstAmount) {
+        it.cgst = Math.round(itemTaxable * 0.09 * 100) / 100;
+      }
+      if (!it.sgst && orderObj.sgstAmount) {
+        it.sgst = Math.round(itemTaxable * 0.09 * 100) / 100;
+      }
+      if (!it.totalGST && (it.cgst || it.sgst)) {
+        it.totalGST = Math.round(((it.cgst || 0) + (it.sgst || 0)) * 100) / 100;
+      }
+      if (!it.imageInfo?.image?.title && it.name) {
+        it.imageInfo = it.imageInfo || {};
+        it.imageInfo.image = it.imageInfo.image || {};
+        if (!it.imageInfo.image.title) {
+          it.imageInfo.image.title = it.name;
+        }
+      }
+      return it;
+    });
+  }
+
+  // Persist background migration if order was stored with missing fields
+  if (!order.shippingAddress?.address || !order.userInfo?.user) {
+    Order.findByIdAndUpdate(orderId, {
+      userInfo: orderObj.userInfo,
+      shippingAddress: orderObj.shippingAddress,
+      gst: orderObj.gst,
+      gstCharge: orderObj.gstCharge,
+      gstChargeAmount: orderObj.gstChargeAmount,
+      cgstAmount: orderObj.cgstAmount,
+      sgstAmount: orderObj.sgstAmount,
+      totalAmount: orderObj.totalAmount,
+      orderItems: orderObj.orderItems,
+    }).catch((err) => console.warn("Background order migration error:", err.message));
+  }
+
+  res.status(200).send({ status: true, order: orderObj });
 });
 
 const getOrderByStatus = asyncHandler(async (req, res) => {
@@ -1018,7 +1356,7 @@ const getPendingOrders = asyncHandler(async (req, res) => {
 //           }
 
 //           if (content?.charges?.delivery) {
-//             const itemDeliveryCharge = width * height * 1; // ₹1 per sq.in.
+//             const itemDeliveryCharge = width * height * 1; // â‚¹1 per sq.in.
 //             maxDeliveryCharge = Math.max(maxDeliveryCharge, itemDeliveryCharge);
 //           }
 //         }
@@ -1142,7 +1480,7 @@ const getPendingOrders = asyncHandler(async (req, res) => {
 //           }
 
 //           if (content?.charges?.delivery) {
-//             const itemDeliveryCharge = width * height * 1; // ₹1 per sq.in.
+//             const itemDeliveryCharge = width * height * 1; // â‚¹1 per sq.in.
 //             maxDeliveryCharge = Math.max(maxDeliveryCharge, itemDeliveryCharge);
 //           }
 //         }
@@ -1465,19 +1803,21 @@ const updatePrintStatus = asyncHandler(async (req, res) => {
 
   await order.save();
 
-  await sendNotificationToUser({
-    userId: order.userInfo.user,
-    userType: order.userInfo.userType,
-    title: "Print Status Updated",
-    body: `Your order is now: ${printStatus?.slice(0, 1).toUpperCase() + printStatus?.slice(1)
-      }`,
-    type: "order",
-    data: {
-      url: `${order.userInfo.userType === "User" ? "clickedart" : "clickedartartist"
-        }://${printStatus === "no-print" ? "digitalorder" : "printorder"}/${order._id
+  if (order.userInfo && order.userInfo.user) {
+    await sendNotificationToUser({
+      userId: order.userInfo.user,
+      userType: order.userInfo.userType,
+      title: "Print Status Updated",
+      body: `Your order is now: ${printStatus?.slice(0, 1).toUpperCase() + printStatus?.slice(1)
         }`,
-    },
-  });
+      type: "order",
+      data: {
+        url: `${order.userInfo.userType === "User" ? "clickedart" : "clickedartartist"
+          }://${printStatus === "no-print" ? "digitalorder" : "printorder"}/${order._id
+          }`,
+      },
+    });
+  }
 
   res.status(200).send({ message: "Print Status updated successfully" });
 });
@@ -1503,6 +1843,168 @@ const updateReadyToShipStatus = asyncHandler(async (req, res) => {
     .send({ message: "Ready To Ship Status Updated Successfully" });
 });
 
+const getStoreOrders = asyncHandler(async (req, res) => {
+  const storeId = req.storeId;
+  const {
+    search,
+    status,
+    startDate,
+    endDate,
+    page = 1,
+    limit = 15,
+  } = req.query;
+
+  const query = { orderSource: { $in: ["STORE", "store"] } };
+  if (storeId) {
+    query.$or = [
+      { store: storeId },
+      { store: null },
+      { store: { $exists: false } },
+    ];
+  }
+
+  // Status filter
+  if (status && status !== "all") {
+    query.orderStatus = status;
+  }
+
+  // Date range filter
+  if (startDate || endDate) {
+    query.createdAt = {};
+    if (startDate) {
+      const start = new Date(startDate);
+      start.setHours(0, 0, 0, 0);
+      query.createdAt.$gte = start;
+    }
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      query.createdAt.$lte = end;
+    }
+  }
+
+  // Search filter
+  if (search && search.trim() !== "") {
+    const regex = new RegExp(search.trim(), "i");
+    query.$or = [
+      { orderNumber: regex },
+      { invoiceNumber: regex },
+      { "customer.name": regex },
+      { "customer.email": regex },
+      { "customer.phone": regex },
+    ];
+  }
+
+  const pageNum = parseInt(page, 10) || 1;
+  const limitNum = parseInt(limit, 10) || 15;
+  const skip = (pageNum - 1) * limitNum;
+
+  const total = await Order.countDocuments(query);
+  const orders = await Order.find(query)
+    .populate({
+      path: "orderItems.imageInfo.image",
+    })
+    .populate({
+      path: "orderItems.frameInfo.frame",
+    })
+    .populate({
+      path: "orderItems.paperInfo.paper",
+    })
+    .populate({
+      path: "orderItems.imageInfo.photographer",
+    })
+    .populate("userInfo.user")
+    .populate("store", "name storeCode city state")
+    .populate("createdBy", "name email role")
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limitNum)
+    .lean();
+
+  const enrichedOrders = orders.map((ord) => {
+    const u = ord.userInfo?.user;
+    const userName =
+      typeof u === "object" && u
+        ? `${u.firstName || ""} ${u.lastName || ""}`.trim() || u.name
+        : "";
+    const userPhone = typeof u === "object" && u ? (u.mobile || u.phone || "") : "";
+    const userEmail = typeof u === "object" && u ? (u.email || "") : "";
+
+    const currentCust = ord.customer || {};
+    const isDefaultCust =
+      !currentCust.name || currentCust.name === "Walk-in Customer";
+
+    const resolvedCustomerName =
+      (!isDefaultCust && currentCust.name) ||
+      userName ||
+      currentCust.name ||
+      "Walk-in Customer";
+    const resolvedCustomerPhone = currentCust.phone || userPhone || "";
+    const resolvedCustomerEmail = currentCust.email || userEmail || "";
+
+    return {
+      ...ord,
+      customer: {
+        ...currentCust,
+        name: resolvedCustomerName,
+        phone: resolvedCustomerPhone,
+        email: resolvedCustomerEmail,
+      },
+    };
+  });
+
+  res.status(200).json({
+    status: true,
+    orders: enrichedOrders,
+    pagination: {
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum) || 1,
+    },
+  });
+});
+
+const validateStoreCoupon = asyncHandler(async (req, res) => {
+  const { code } = req.query;
+  if (!code || !code.trim()) {
+    return res.status(400).json({
+      status: false,
+      message: "Coupon code is required",
+    });
+  }
+
+  const cleanCode = code.trim().toUpperCase();
+  const coupon = await Coupon.findOne({
+    code: { $regex: new RegExp(`^${cleanCode}$`, "i") },
+  });
+
+  if (!coupon) {
+    return res.status(404).json({
+      status: false,
+      message: `Coupon code "${cleanCode}" is invalid`,
+    });
+  }
+
+  if (coupon.status && coupon.status !== "active") {
+    return res.status(400).json({
+      status: false,
+      message: `Coupon code "${cleanCode}" is no longer active`,
+    });
+  }
+
+  res.status(200).json({
+    status: true,
+    message: `Coupon "${cleanCode}" applied successfully!`,
+    coupon: {
+      code: coupon.code,
+      discountPercentage: Number(coupon.discountPercentage) || 0,
+      maxDiscountAmount: Number(coupon.maxDiscountAmount) || 0,
+      type: coupon.type || "coupon",
+    },
+  });
+});
+
 module.exports = {
   createOrder,
   getAllOrders,
@@ -1519,4 +2021,6 @@ module.exports = {
   getFailedOrders,
   updateReadyToShipStatus,
   paymentHandler,
+  getStoreOrders,
+  validateStoreCoupon,
 };

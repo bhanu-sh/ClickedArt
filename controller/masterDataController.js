@@ -176,9 +176,12 @@ const documentCountsForAdmin = asyncHandler(async (req, res) => {
       totalDigitalOrders,
       totalPrintOrders,
       totalCustomOrders,
+      totalArtworkOrders,
       pendingOrders,
       pendingCustomOrders,
       pendingMonetizations,
+      totalStoreOrders,
+      pendingStoreOrders,
       plans,
     ] = await Promise.all([
       safeCount(User.countDocuments({ isActive: true })),
@@ -229,6 +232,12 @@ const documentCountsForAdmin = asyncHandler(async (req, res) => {
       safeCount(CustomImageOrder.countDocuments()),
       safeCount(
         Order.countDocuments({
+          "orderItems.imageInfo.imageModel": "Artwork",
+          printStatus: { $ne: "no-print" },
+        })
+      ),
+      safeCount(
+        Order.countDocuments({
           printStatus: { $nin: ["delivered", "no-print"] },
         })
       ),
@@ -238,6 +247,13 @@ const documentCountsForAdmin = asyncHandler(async (req, res) => {
         })
       ),
       safeCount(Monetization.countDocuments({ status: "pending" })),
+      safeCount(Order.countDocuments({ orderSource: { $in: ["STORE", "store"] } })),
+      safeCount(
+        Order.countDocuments({
+          orderSource: { $in: ["STORE", "store"] },
+          orderStatus: { $in: ["pending", "processing"] },
+        })
+      ),
       Plan.find({}).catch((err) => {
         console.error("Plan fetch failed:", err.message);
         return [];
@@ -276,6 +292,9 @@ const documentCountsForAdmin = asyncHandler(async (req, res) => {
       totalDigitalOrders,
       totalPrintOrders,
       totalCustomOrders,
+      totalArtworkOrders,
+      totalStoreOrders,
+      pendingStoreOrders,
       pendingOrders,
       pendingCustomOrders,
       pendingMonetizations,

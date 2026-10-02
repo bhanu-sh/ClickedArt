@@ -6,14 +6,35 @@ const User = require("../models/userModel.js");
 const Photographer = require("../models/photographerModel.js");
 const Subscription = require("../models/subscriptionModel.js");
 const Referral = require("../models/referralModel.js");
+const StoreOrder = Order;
 
 const getRevenueOverview = asyncHandler(async (req, res) => {
   const { categoryType = "Prints" } = req.query;
 
   const totalRevenue = await Order.aggregate([
-    { $match: { orderStatus: "completed", isPaid: true } },
+    {
+      $match: {
+        orderStatus: "completed",
+        isPaid: true,
+        orderSource: { $nin: ["STORE", "store"] },
+      },
+    },
     { $group: { _id: null, totalRevenue: { $sum: "$totalAmount" } } },
   ]);
+
+  const storeOrderMatch = {
+    orderStatus: { $ne: "cancelled" },
+    orderSource: { $in: ["STORE", "store"] },
+  };
+
+  const storeTotalRevenue = await Order.aggregate([
+    { $match: storeOrderMatch },
+    { $group: { _id: null, totalRevenue: { $sum: "$totalAmount" } } },
+  ]);
+  const storeTotalAmount =
+    storeTotalRevenue.length > 0 ? storeTotalRevenue[0].totalRevenue : 0;
+  const onlineTotalAmount =
+    totalRevenue.length > 0 ? totalRevenue[0].totalRevenue : 0;
 
   const revenueByFiscalYear = await Order.aggregate([
     {
@@ -43,15 +64,43 @@ const getRevenueOverview = asyncHandler(async (req, res) => {
       $sort: { "_id.fiscalYear": 1 },
     },
   ]);
-  // const revenueByFiscalYear = await Order.aggregate([
-  //     { $match: { orderStatus: 'completed', isPaid: true } },
-  //     {
-  //         $group: {
-  //             _id: { year: { $year: '$createdAt' } },
-  //             yearlyRevenue: { $sum: '$totalAmount' },
-  //         },
-  //     },
-  // ]);
+
+  const storeRevenueByFiscalYear = await StoreOrder.aggregate([
+    { $match: storeOrderMatch },
+    {
+      $addFields: {
+        fiscalYear: {
+          $cond: [
+            { $lt: [{ $month: "$createdAt" }, 4] },
+            { $subtract: [{ $year: "$createdAt" }, 1] },
+            { $year: "$createdAt" },
+          ],
+        },
+      },
+    },
+    {
+      $group: {
+        _id: { fiscalYear: "$fiscalYear" },
+        fiscalYearRevenue: { $sum: "$totalAmount" },
+      },
+    },
+  ]);
+
+  const fyMap = {};
+  revenueByFiscalYear.forEach((item) => {
+    fyMap[item._id.fiscalYear] =
+      (fyMap[item._id.fiscalYear] || 0) + item.fiscalYearRevenue;
+  });
+  storeRevenueByFiscalYear.forEach((item) => {
+    fyMap[item._id.fiscalYear] =
+      (fyMap[item._id.fiscalYear] || 0) + item.fiscalYearRevenue;
+  });
+  const revenueByFiscalYearData = Object.keys(fyMap)
+    .sort((a, b) => Number(a) - Number(b))
+    .map((year) => ({
+      year: Number(year),
+      yearlyRevenue: fyMap[year],
+    }));
 
   const revenueByMonth = await Order.aggregate([
     { $match: { orderStatus: "completed", isPaid: true } },
@@ -62,6 +111,38 @@ const getRevenueOverview = asyncHandler(async (req, res) => {
       },
     },
   ]);
+
+  const storeRevenueByMonth = await StoreOrder.aggregate([
+    { $match: storeOrderMatch },
+    {
+      $group: {
+        _id: { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } },
+        monthlyRevenue: { $sum: "$totalAmount" },
+      },
+    },
+  ]);
+
+  const monthMap = {};
+  revenueByMonth.forEach((item) => {
+    const key = `${item._id.year}-${item._id.month}`;
+    monthMap[key] = {
+      year: item._id.year,
+      month: item._id.month,
+      monthlyRevenue: (monthMap[key]?.monthlyRevenue || 0) + item.monthlyRevenue,
+    };
+  });
+  storeRevenueByMonth.forEach((item) => {
+    const key = `${item._id.year}-${item._id.month}`;
+    monthMap[key] = {
+      year: item._id.year,
+      month: item._id.month,
+      monthlyRevenue: (monthMap[key]?.monthlyRevenue || 0) + item.monthlyRevenue,
+    };
+  });
+  const revenueByMonthData = Object.values(monthMap).sort((a, b) => {
+    if (a.year !== b.year) return a.year - b.year;
+    return a.month - b.month;
+  });
 
   const revenueByCategory = await Order.aggregate([
     { $match: { orderStatus: "completed", isPaid: true } },
@@ -90,20 +171,13 @@ const getRevenueOverview = asyncHandler(async (req, res) => {
     },
   ]);
 
-  const totalRevenueAmount =
-    totalRevenue.length > 0 ? totalRevenue[0].totalRevenue : 0;
-  const revenueByFiscalYearData = revenueByFiscalYear.map((item) => ({
-    year: item._id.fiscalYear,
-    yearlyRevenue: item.fiscalYearRevenue,
-  }));
-
-  const revenueByMonthData = revenueByMonth.map((item) => ({
-    year: item._id.year,
-    month: item._id.month,
-    monthlyRevenue: item.monthlyRevenue,
-  }));
+  let printStoreRevenue = 0;
+  if (categoryType === "Prints") {
+    printStoreRevenue = storeTotalAmount;
+  }
   const revenueByCategoryAmount =
-    revenueByCategory.length > 0 ? revenueByCategory[0].revenue : 0;
+    (revenueByCategory.length > 0 ? revenueByCategory[0].revenue : 0) +
+    printStoreRevenue;
 
   let basicPlanRevenue = 0;
   let intermediatePlanRevenue = 0;
@@ -125,7 +199,9 @@ const getRevenueOverview = asyncHandler(async (req, res) => {
   }
 
   res.status(200).send({
-    totalRevenue: totalRevenueAmount,
+    totalRevenue: onlineTotalAmount + storeTotalAmount,
+    onlineRevenue: onlineTotalAmount,
+    storeRevenue: storeTotalAmount,
     revenueByFiscalYear: revenueByFiscalYearData,
     revenueByMonth: revenueByMonthData,
     revenueByCategory: revenueByCategoryAmount,
@@ -327,10 +403,31 @@ const getSalesDataMetrics = asyncHandler(async (req, res) => {
     result[item._id] = item.count;
   });
 
-  const averageOrderStage = { orderStatus: "completed", isPaid: true };
+  const storeMatchStage = {
+    orderStatus: { $ne: "cancelled" },
+    orderSource: { $in: ["STORE", "store"] },
+  };
+  if (startOfDay) storeMatchStage.createdAt = { $gte: startOfDay };
+  if (endOfDay) {
+    storeMatchStage.createdAt = storeMatchStage.createdAt
+      ? { ...storeMatchStage.createdAt, $lte: endOfDay }
+      : { $lte: endOfDay };
+  }
 
-  const averageOrderValue = await Order.aggregate([
-    { $match: averageOrderStage },
+  const storePrints = await StoreOrder.aggregate([
+    { $match: storeMatchStage },
+    { $unwind: "$items" },
+    {
+      $group: {
+        _id: null,
+        count: { $sum: { $ifNull: ["$items.quantity", 1] } },
+      },
+    },
+  ]);
+  const storePrintsCount = storePrints[0]?.count || 0;
+
+  const storeAovData = await StoreOrder.aggregate([
+    { $match: storeMatchStage },
     {
       $group: {
         _id: null,
@@ -338,19 +435,38 @@ const getSalesDataMetrics = asyncHandler(async (req, res) => {
         orderCount: { $sum: 1 },
       },
     },
-    {
-      $project: {
-        _id: 0,
-        aov: { $divide: ["$totalRevenue", "$orderCount"] },
-      },
-    },
   ]);
+
+  const averageOrderStage = { orderStatus: "completed", isPaid: true };
+  if (startOfDay) averageOrderStage.createdAt = { $gte: startOfDay };
+  if (endOfDay) {
+    averageOrderStage.createdAt = averageOrderStage.createdAt
+      ? { ...averageOrderStage.createdAt, $lte: endOfDay }
+      : { $lte: endOfDay };
+  }
+
+  const onlineOrderCount = (await Order.countDocuments(averageOrderStage)) || 0;
+  const onlineTotalRev = (await Order.aggregate([
+    { $match: averageOrderStage },
+    { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+  ]))[0]?.total || 0;
+
+  const storeOrderCount = storeAovData[0]?.orderCount || 0;
+  const storeTotalRev = storeAovData[0]?.totalRevenue || 0;
+
+  const totalCombinedOrders = onlineOrderCount + storeOrderCount;
+  const totalCombinedRevenue = onlineTotalRev + storeTotalRev;
+  const combinedAov =
+    totalCombinedOrders > 0 ? totalCombinedRevenue / totalCombinedOrders : 0;
 
   res.status(200).send({
     totalDownloads: totalDownloads[0]?.count || 0,
-    totalPrints: totalPrints[0]?.count || 0,
+    totalPrints: (totalPrints[0]?.count || 0) + storePrintsCount,
     totalCustomPrints: totalCustomPrints[0]?.count || 0,
-    averageOrderValue: averageOrderValue[0]?.aov || 0,
+    averageOrderValue: combinedAov,
+    onlinePrints: totalPrints[0]?.count || 0,
+    storePrints: storePrintsCount,
+    storeOrdersCount: storeOrderCount,
     printData: result,
   });
 });
@@ -577,10 +693,19 @@ const getAllDigitalOrders = asyncHandler(async (req, res) => {
 });
 
 const getAllPrintOrders = asyncHandler(async (req, res) => {
-  const { pageNumber = 1, pageSize = 20 } = req.query;
+  const { pageNumber = 1, pageSize = 20, source } = req.query;
+
+  const query = { printStatus: { $ne: "no-print" } };
+  if (source && source.toUpperCase() === "ONLINE") {
+    query.orderSource = { $nin: ["STORE", "store"] };
+  } else if (source && source.toUpperCase() === "STORE") {
+    query.orderSource = { $in: ["STORE", "store"] };
+  } else if (source && source !== "all") {
+    query.orderSource = source.toUpperCase();
+  }
 
   const [orders, totalDocuments] = await Promise.all([
-    Order.find({ printStatus: { $ne: "no-print" } })
+    Order.find(query)
       .populate({
         path: "orderItems",
         populate: [
@@ -602,10 +727,11 @@ const getAllPrintOrders = asyncHandler(async (req, res) => {
         ],
       })
       .populate("userInfo.user")
+      .populate("store", "name storeCode city state")
       .sort({ createdAt: -1 })
       .skip((pageNumber - 1) * pageSize)
       .limit(pageSize),
-    Order.countDocuments({ printStatus: { $ne: "no-print" } }),
+    Order.countDocuments(query),
   ]);
 
   const pageCount = Math.ceil(totalDocuments / pageSize);
