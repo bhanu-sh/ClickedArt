@@ -1,5 +1,5 @@
 const express = require('express')
-const { isAdmin, isSuperAdmin } = require('../middleware/authMiddleware')
+const { isAdmin, isSuperAdmin, verifyToken } = require('../middleware/authMiddleware')
 const { 
     getRevenueOverview,
     getSalesDataMetrics,
@@ -14,6 +14,8 @@ const {
  } = require('../controller/adminAnalyticsController.js')
 const { masterDataController, documentCountsForAdmin } = require('../controller/masterDataController.js')
 const router = express.Router()
+
+router.use(verifyToken)
 
 router.get('/get-revenue-overview', getRevenueOverview)
 router.get('/get-revenue-by-time', revenueByCategory)

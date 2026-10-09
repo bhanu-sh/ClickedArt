@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const asyncHandler = require("express-async-handler");
 const Invoice = require("../models/invoiceModel.js");
 const Order = require("../models/orderModel.js");
@@ -11,14 +12,17 @@ const StoreOrder = Order;
 const getRevenueOverview = asyncHandler(async (req, res) => {
   const { categoryType = "Prints" } = req.query;
 
+  const onlineMatch = {
+    orderStatus: "completed",
+    isPaid: true,
+    orderSource: { $nin: ["STORE", "store"] },
+  };
+  if (req.user && req.user.type === "StoreUser") {
+    onlineMatch._id = new mongoose.Types.ObjectId("000000000000000000000000"); 
+  }
+
   const totalRevenue = await Order.aggregate([
-    {
-      $match: {
-        orderStatus: "completed",
-        isPaid: true,
-        orderSource: { $nin: ["STORE", "store"] },
-      },
-    },
+    { $match: onlineMatch },
     { $group: { _id: null, totalRevenue: { $sum: "$totalAmount" } } },
   ]);
 
@@ -26,6 +30,11 @@ const getRevenueOverview = asyncHandler(async (req, res) => {
     orderStatus: { $ne: "cancelled" },
     orderSource: { $in: ["STORE", "store"] },
   };
+  if (req.user && req.user.type === "StoreUser") {
+    let sId = req.user.storeId;
+    if (sId && typeof sId === "object" && sId._id) sId = sId._id;
+    storeOrderMatch.store = new mongoose.Types.ObjectId(sId);
+  }
 
   const storeTotalRevenue = await Order.aggregate([
     { $match: storeOrderMatch },
@@ -36,13 +45,18 @@ const getRevenueOverview = asyncHandler(async (req, res) => {
   const onlineTotalAmount =
     totalRevenue.length > 0 ? totalRevenue[0].totalRevenue : 0;
 
+  const baseMatch = {
+    orderStatus: "completed",
+    isPaid: true,
+  };
+  if (req.user && req.user.type === "StoreUser") {
+    let sId = req.user.storeId;
+    if (sId && typeof sId === "object" && sId._id) sId = sId._id;
+    baseMatch.store = new mongoose.Types.ObjectId(sId);
+  }
+
   const revenueByFiscalYear = await Order.aggregate([
-    {
-      $match: {
-        orderStatus: "completed",
-        isPaid: true,
-      },
-    },
+    { $match: onlineMatch },
     {
       $addFields: {
         fiscalYear: {
@@ -103,7 +117,7 @@ const getRevenueOverview = asyncHandler(async (req, res) => {
     }));
 
   const revenueByMonth = await Order.aggregate([
-    { $match: { orderStatus: "completed", isPaid: true } },
+    { $match: onlineMatch },
     {
       $group: {
         _id: { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } },
@@ -145,7 +159,7 @@ const getRevenueOverview = asyncHandler(async (req, res) => {
   });
 
   const revenueByCategory = await Order.aggregate([
-    { $match: { orderStatus: "completed", isPaid: true } },
+    { $match: onlineMatch },
     { $unwind: "$orderItems" },
     {
       $match: {
@@ -303,8 +317,12 @@ const getSalesDataMetrics = asyncHandler(async (req, res) => {
   const matchStage = {
     orderStatus: "completed",
     isPaid: true,
+    orderSource: { $nin: ["STORE", "store"] },
     printStatus: "no-print",
   };
+  if (req.user && req.user.type === "StoreUser") {
+    matchStage._id = new mongoose.Types.ObjectId("000000000000000000000000");
+  }
 
   if (startOfDay) matchStage.createdAt = { $gte: startOfDay };
   if (endOfDay) {
@@ -332,16 +350,24 @@ const getSalesDataMetrics = asyncHandler(async (req, res) => {
   const matchStageForPrint = {
     orderStatus: "completed",
     isPaid: true,
+    orderSource: { $nin: ["STORE", "store"] },
     printStatus: {
       $nin: ["no-print", "cancelled"],
     },
   };
+  if (req.user && req.user.type === "StoreUser") {
+    matchStageForPrint._id = new mongoose.Types.ObjectId("000000000000000000000000");
+  }
 
   const matchStageForCustomPrint = {
     orderStatus: "completed",
     isPaid: true,
+    orderSource: { $nin: ["STORE", "store"] },
     printStatus: { $ne: "no-print" },
   };
+  if (req.user && req.user.type === "StoreUser") {
+    matchStageForCustomPrint._id = new mongoose.Types.ObjectId("000000000000000000000000");
+  }
 
   const totalPrints = await Order.aggregate([
     { $match: matchStageForPrint },
@@ -375,11 +401,17 @@ const getSalesDataMetrics = asyncHandler(async (req, res) => {
     },
   ]);
 
+  const analyticsMatch = { 
+    printStatus: { $ne: "no-print" },
+    orderSource: { $nin: ["STORE", "store"] }
+  };
+  if (req.user && req.user.type === "StoreUser") {
+    analyticsMatch._id = new mongoose.Types.ObjectId("000000000000000000000000");
+  }
+
   const analytics = await Order.aggregate([
     {
-      $match: {
-        printStatus: { $ne: "no-print" },
-      },
+      $match: analyticsMatch,
     },
     {
       $group: {
@@ -407,12 +439,38 @@ const getSalesDataMetrics = asyncHandler(async (req, res) => {
     orderStatus: { $ne: "cancelled" },
     orderSource: { $in: ["STORE", "store"] },
   };
+  if (req.user && req.user.type === "StoreUser") {
+    let sId = req.user.storeId;
+    if (sId && typeof sId === "object" && sId._id) sId = sId._id;
+    storeMatchStage.store = new mongoose.Types.ObjectId(sId);
+  }
   if (startOfDay) storeMatchStage.createdAt = { $gte: startOfDay };
   if (endOfDay) {
     storeMatchStage.createdAt = storeMatchStage.createdAt
       ? { ...storeMatchStage.createdAt, $lte: endOfDay }
       : { $lte: endOfDay };
   }
+
+  const storeAnalytics = await StoreOrder.aggregate([
+    {
+      $match: {
+        ...storeMatchStage,
+        printStatus: { $ne: "no-print" }
+      }
+    },
+    {
+      $group: {
+        _id: "$printStatus",
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  storeAnalytics.forEach((item) => {
+    result[item._id] = (result[item._id] || 0) + item.count;
+  });
+
+
 
   const storePrints = await StoreOrder.aggregate([
     { $match: storeMatchStage },
@@ -437,7 +495,14 @@ const getSalesDataMetrics = asyncHandler(async (req, res) => {
     },
   ]);
 
-  const averageOrderStage = { orderStatus: "completed", isPaid: true };
+  const averageOrderStage = {
+    orderStatus: "completed",
+    isPaid: true,
+    orderSource: { $nin: ["STORE", "store"] },
+  };
+  if (req.user && req.user.type === "StoreUser") {
+    averageOrderStage._id = new mongoose.Types.ObjectId("000000000000000000000000");
+  }
   if (startOfDay) averageOrderStage.createdAt = { $gte: startOfDay };
   if (endOfDay) {
     averageOrderStage.createdAt = averageOrderStage.createdAt
@@ -696,12 +761,20 @@ const getAllPrintOrders = asyncHandler(async (req, res) => {
   const { pageNumber = 1, pageSize = 20, source } = req.query;
 
   const query = { printStatus: { $ne: "no-print" } };
-  if (source && source.toUpperCase() === "ONLINE") {
-    query.orderSource = { $nin: ["STORE", "store"] };
-  } else if (source && source.toUpperCase() === "STORE") {
+  
+  if (req.user && req.user.type === "StoreUser") {
+    let sId = req.user.storeId;
+    if (sId && typeof sId === "object" && sId._id) sId = sId._id;
+    query.store = new mongoose.Types.ObjectId(sId);
     query.orderSource = { $in: ["STORE", "store"] };
-  } else if (source && source !== "all") {
-    query.orderSource = source.toUpperCase();
+  } else {
+    if (source && source.toUpperCase() === "ONLINE") {
+      query.orderSource = { $nin: ["STORE", "store"] };
+    } else if (source && source.toUpperCase() === "STORE") {
+      query.orderSource = { $in: ["STORE", "store"] };
+    } else if (source && source !== "all") {
+      query.orderSource = source.toUpperCase();
+    }
   }
 
   const [orders, totalDocuments] = await Promise.all([

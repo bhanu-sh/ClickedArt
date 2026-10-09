@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const Invoice = require("../models/invoiceModel.js");
 const Order = require("../models/orderModel.js");
 const CustomImageOrder = require("../models/customOrderModel.js");
@@ -154,6 +155,13 @@ const documentCountsForAdmin = asyncHandler(async (req, res) => {
         return 0;
       });
 
+    let orderMatch = {};
+    if (req.user && req.user.type === "StoreUser") {
+      let sId = req.user.storeId;
+      if (sId && typeof sId === "object" && sId._id) sId = sId._id;
+      orderMatch.store = new mongoose.Types.ObjectId(sId);
+    }
+
     const [
       totalUsers,
       totalPhotos,
@@ -226,18 +234,20 @@ const documentCountsForAdmin = asyncHandler(async (req, res) => {
       safeCount(Frame.countDocuments()),
       safeCount(Mount.countDocuments()),
       safeCount(Paper.countDocuments()),
-      safeCount(Order.countDocuments()),
-      safeCount(Order.countDocuments({ printStatus: "no-print" })),
-      safeCount(Order.countDocuments({ printStatus: { $ne: "no-print" } })),
+      safeCount(Order.countDocuments({ ...orderMatch })),
+      safeCount(Order.countDocuments({ ...orderMatch, printStatus: "no-print" })),
+      safeCount(Order.countDocuments({ ...orderMatch, printStatus: { $ne: "no-print" } })),
       safeCount(CustomImageOrder.countDocuments()),
       safeCount(
         Order.countDocuments({
+          ...orderMatch,
           "orderItems.imageInfo.imageModel": "Artwork",
           printStatus: { $ne: "no-print" },
         })
       ),
       safeCount(
         Order.countDocuments({
+          ...orderMatch,
           printStatus: { $nin: ["delivered", "no-print"] },
         })
       ),
@@ -247,9 +257,10 @@ const documentCountsForAdmin = asyncHandler(async (req, res) => {
         })
       ),
       safeCount(Monetization.countDocuments({ status: "pending" })),
-      safeCount(Order.countDocuments({ orderSource: { $in: ["STORE", "store"] } })),
+      safeCount(Order.countDocuments({ ...orderMatch, orderSource: { $in: ["STORE", "store"] } })),
       safeCount(
         Order.countDocuments({
+          ...orderMatch,
           orderSource: { $in: ["STORE", "store"] },
           orderStatus: { $in: ["pending", "processing"] },
         })
