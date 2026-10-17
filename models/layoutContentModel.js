@@ -16,6 +16,10 @@ const layoutContentSchema = new mongoose.Schema({
       type: String,
       required: true,
     },
+    businessInfo: {
+      type: String,
+      required: true,
+    },
     phone: {
       type: String,
       required: true,
