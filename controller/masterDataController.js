@@ -189,6 +189,7 @@ const documentCountsForAdmin = asyncHandler(async (req, res) => {
       pendingCustomOrders,
       pendingMonetizations,
       totalStoreOrders,
+      totalShopOrders,
       pendingStoreOrders,
       plans,
     ] = await Promise.all([
@@ -210,13 +211,13 @@ const documentCountsForAdmin = asyncHandler(async (req, res) => {
       ),
       safeCount(
         ImageVault.countDocuments({
-          exclusiveLicenseStatus: "pending",
+          exclusiveLicenseStatus: { $in: ["pending", "review"] },
           isActive: false,
         })
       ),
       safeCount(
         Artwork.countDocuments({
-          exclusiveLicenseStatus: "pending",
+          exclusiveLicenseStatus: { $in: ["pending", "review"] },
           isActive: false,
         })
       ),
@@ -258,6 +259,7 @@ const documentCountsForAdmin = asyncHandler(async (req, res) => {
       ),
       safeCount(Monetization.countDocuments({ status: "pending" })),
       safeCount(Order.countDocuments({ ...orderMatch, orderSource: { $in: ["STORE", "store"] } })),
+      safeCount(Order.countDocuments({ ...orderMatch, $or: [{ orderSource: { $in: ["SHOP", "shop"] } }, { "orderItems.product": { $exists: true, $ne: null } }, { "orderItems.itemType": "product" }] })),
       safeCount(
         Order.countDocuments({
           ...orderMatch,
@@ -305,6 +307,7 @@ const documentCountsForAdmin = asyncHandler(async (req, res) => {
       totalCustomOrders,
       totalArtworkOrders,
       totalStoreOrders,
+      totalShopOrders,
       pendingStoreOrders,
       pendingOrders,
       pendingCustomOrders,

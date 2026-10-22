@@ -52,6 +52,8 @@ const artworkCategoryRoutes = require("./routes/artworkCategoryRoutes");
 const artworkOrderRoutes = require("./routes/artworkOrderRoutes");
 const storeRoutes = require("./routes/storeRoutes");
 const adminStoresRoutes = require("./routes/adminStoresRoutes");
+const productRoutes = require("./routes/productRoutes");
+const shopCategoryRoutes = require("./routes/shopCategoryRoutes");
 const cron = require("node-cron");
 const {
   checkAndUpdateSubscriptions,
@@ -130,6 +132,8 @@ app.use("/api/artwork-category", artworkCategoryRoutes);
 app.use("/api/artwork-orders", artworkOrderRoutes);
 app.use("/api/store", storeRoutes);
 app.use("/api/stores", adminStoresRoutes);
+app.use("/api/products", productRoutes);
+app.use("/api/shop-category", shopCategoryRoutes);
 app.use("/api/test", (req, res) => {
   res.status(200).json({ message: "Test route is working!" });
 });

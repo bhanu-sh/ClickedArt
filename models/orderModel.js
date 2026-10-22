@@ -188,7 +188,7 @@ const orderSchema = new mongoose.Schema(
     },
     orderSource: {
       type: String,
-      enum: ["ONLINE", "STORE", "online", "store"],
+      enum: ["ONLINE", "STORE", "SHOP", "online", "store", "shop"],
       default: "ONLINE",
       uppercase: true,
       index: true,
