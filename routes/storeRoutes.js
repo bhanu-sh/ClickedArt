@@ -52,7 +52,11 @@ const {
   updateStoreSettings,
 } = require("../controller/store/storeSettingsController");
 
+const { getActiveStores } = require("../controller/adminStoreController");
+
 // --- PUBLIC ROUTES ---
+router.get("/active-stores", getActiveStores);
+router.get("/active", getActiveStores);
 router.post("/auth/login", loginStoreUser);
 
 // --- AUTHENTICATED STORE USER ROUTES ---

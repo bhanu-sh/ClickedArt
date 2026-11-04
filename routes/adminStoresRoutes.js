@@ -4,6 +4,7 @@ const { isAdmin } = require("../middleware/authMiddleware");
 
 const {
   getStores,
+  getActiveStores,
   createStore,
   updateStore,
   updateStoreStatus,
@@ -11,7 +12,13 @@ const {
   deleteStore,
 } = require("../controller/adminStoreController");
 
-router.get("/", isAdmin, getStores);
+router.get("/active", getActiveStores);
+router.get("/", (req, res, next) => {
+  if (!req.header("x-auth-token")) {
+    return getActiveStores(req, res, next);
+  }
+  return isAdmin(req, res, () => getStores(req, res, next));
+});
 router.post("/", isAdmin, createStore);
 router.put("/:id", isAdmin, updateStore);
 router.patch("/:id/status", isAdmin, updateStoreStatus);

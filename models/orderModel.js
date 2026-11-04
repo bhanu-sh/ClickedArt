@@ -18,12 +18,12 @@ const orderSchema = new mongoose.Schema(
       {
         imageInfo: {
           image: {
-            type: mongoose.Schema.Types.ObjectId,
+            type: mongoose.Schema.Types.Mixed,
             refPath: "orderItems.imageInfo.imageModel",
           },
           imageModel: {
             type: String,
-            enum: ["ImageVault", "Artwork"],
+            enum: ["ImageVault", "Artwork", "Product"],
             default: "ImageVault",
           },
           photographer: {
@@ -133,6 +133,10 @@ const orderSchema = new mongoose.Schema(
         discount: { type: Number },
         total: { type: Number },
         printType: { type: String },
+        finishingOption: { type: String },
+        store: { type: mongoose.Schema.Types.ObjectId, ref: "Store" },
+        storeId: { type: String },
+        storeName: { type: String },
         paper: { type: String },
         size: { type: String },
         frame: { type: String },
@@ -267,6 +271,14 @@ const orderSchema = new mongoose.Schema(
     waybill: {
       type: String,
       required: false,
+    },
+    isCustomOrder: {
+      type: Boolean,
+      default: false,
+    },
+    orderType: {
+      type: String,
+      default: "standard",
     },
     readyToShip: {
       type: Boolean,

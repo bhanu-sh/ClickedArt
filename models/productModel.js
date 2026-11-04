@@ -12,6 +12,17 @@ const productSchema = new mongoose.Schema(
       required: [true, "Product price is required"],
       min: [0, "Product price cannot be negative"],
     },
+    discount: {
+      type: Number,
+      default: 0,
+      min: [0, "Discount cannot be negative"],
+      max: [100, "Discount cannot exceed 100%"],
+    },
+    discountedPrice: {
+      type: Number,
+      default: null,
+      min: [0, "Discounted price cannot be negative"],
+    },
     description: {
       type: String,
       required: [true, "Product description is required"],
@@ -34,6 +45,11 @@ const productSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "ShopCategory",
       default: null,
+    },
+    stock: {
+      type: Number,
+      default: 0,
+      min: [0, "Stock cannot be negative"],
     },
   },
   {

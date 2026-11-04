@@ -96,6 +96,10 @@ const orderSchema = new mongoose.Schema(
             type: Number,
           },
         },
+        printType: { type: String },
+        finishingOption: { type: String },
+        store: { type: mongoose.Schema.Types.ObjectId, ref: 'Store' },
+        storeName: { type: String },
         subTotal: {
           type: Number,
           required: true,

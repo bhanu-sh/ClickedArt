@@ -20,9 +20,13 @@ const createPaper = asyncHandler(async (req, res) => {
     image,
     material,
     thickness,
+    initialBasePrice,
     basePricePerSquareInch,
     customDimensions,
     photographerDiscount,
+    userDiscount,
+    extraPrice,
+    hasExtraPrice,
   } = req.body;
 
   const existingPaper = await Paper.findOne({ name });
@@ -31,14 +35,38 @@ const createPaper = asyncHandler(async (req, res) => {
     throw new Error("Paper with this name already exists.");
   }
 
+  const finalInitialBasePrice =
+    Number(initialBasePrice) || Number(basePricePerSquareInch) || 0;
+  const finalBasePrice =
+    Number(basePricePerSquareInch) || finalInitialBasePrice || 0;
+
+  const formattedDimensions = (customDimensions || []).map((dim) => {
+    const w = Number(dim.width) || 0;
+    const h = Number(dim.height) || 0;
+    const price = Number(dim.price) || Math.round(finalBasePrice * w * h);
+    const initialPrice =
+      Number(dim.initialPrice) || Number(dim.price) || Math.round(finalInitialBasePrice * w * h);
+    return {
+      width: w,
+      height: h,
+      price,
+      initialPrice,
+      extraPrice: Number(dim.extraPrice) || 0,
+    };
+  });
+
   const paper = await Paper.create({
     name,
     image,
     material,
     thickness,
-    basePricePerSquareInch,
-    customDimensions,
-    photographerDiscount,
+    initialBasePrice: finalInitialBasePrice,
+    basePricePerSquareInch: finalBasePrice,
+    customDimensions: formattedDimensions,
+    photographerDiscount: photographerDiscount || 0,
+    userDiscount: userDiscount || 0,
+    extraPrice: Number(extraPrice) || 0,
+    hasExtraPrice: Boolean(hasExtraPrice),
   });
 
   res.status(201).send({ paper });
@@ -80,6 +108,8 @@ const updatePaper = asyncHandler(async (req, res) => {
     customDimensions,
     photographerDiscount,
     userDiscount,
+    extraPrice,
+    hasExtraPrice,
   } = req.body;
 
   const paper = await Paper.findById(paperId);
@@ -97,6 +127,8 @@ const updatePaper = asyncHandler(async (req, res) => {
     basePricePerSquareInch ?? paper.basePricePerSquareInch;
   paper.photographerDiscount =
     photographerDiscount ?? paper.photographerDiscount;
+  if (extraPrice !== undefined) paper.extraPrice = extraPrice;
+  if (hasExtraPrice !== undefined) paper.hasExtraPrice = hasExtraPrice;
   if (customDimensions) {
     paper.customDimensions = customDimensions;
   }

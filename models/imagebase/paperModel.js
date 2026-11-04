@@ -20,7 +20,10 @@ const paperSchema = new mongoose.Schema(
     },
     initialBasePrice: {
       type: Number,
-      required: true,
+      required: false,
+      default: function () {
+        return this.basePricePerSquareInch || 0;
+      },
     },
     basePricePerSquareInch: {
       type: Number,
@@ -34,12 +37,32 @@ const paperSchema = new mongoose.Schema(
       type: Number,
       required: false,
     },
+    extraPrice: {
+      type: Number,
+      required: false,
+      default: 0,
+    },
+    hasExtraPrice: {
+      type: Boolean,
+      default: false,
+    },
     customDimensions: [
       {
         width: { type: Number, required: true },
         height: { type: Number, required: true },
-        initialPrice: { type: Number, required: true },
+        initialPrice: {
+          type: Number,
+          required: false,
+          default: function () {
+            return this.price || 0;
+          },
+        },
         price: { type: Number, required: true },
+        extraPrice: {
+          type: Number,
+          required: false,
+          default: 0,
+        },
       },
     ],
     active: {

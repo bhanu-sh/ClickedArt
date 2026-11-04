@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const Order = require("../models/orderModel");
+const Product = require("../models/productModel");
 const Photographer = require("../models/photographerModel");
 const LayoutContent = require("../models/layoutContentModel");
 const Store = require("../models/storeModel");
@@ -62,6 +63,33 @@ const deleteOrder = asyncHandler(async (req, res) => {
   await Order.findByIdAndDelete(orderId);
   res.status(200).send({ message: "Order deleted" });
 });
+
+const decrementProductStock = async (item) => {
+  try {
+    const productId =
+      item.product ||
+      (item.itemType === "product" || item.mode === "product"
+        ? item.imageInfo?.image || item._id || item.id
+        : null) ||
+      item.imageInfo?.image;
+
+    if (!productId || !mongoose.Types.ObjectId.isValid(productId)) return;
+
+    const qty = Math.max(1, parseInt(item.quantity, 10) || 1);
+
+    const product = await Product.findById(productId);
+    if (product) {
+      const currentStock = typeof product.stock === "number" ? product.stock : 0;
+      product.stock = Math.max(0, currentStock - qty);
+      await product.save();
+      console.log(
+        `[Inventory] Stock decremented for "${product.name}" (${product._id}) by ${qty}. Remaining stock: ${product.stock}`
+      );
+    }
+  } catch (err) {
+    console.error("[Inventory] Error decrementing product stock:", err);
+  }
+};
 
 const createOrder = asyncHandler(async (req, res) => {
   const incomingSource = (
@@ -128,6 +156,7 @@ const createOrder = asyncHandler(async (req, res) => {
         const nextCounter = await getCounter(financialYear);
         invoiceNumber = `CAB/${financialYear}/${nextCounter.toString().padStart(4, "0")}`;
         await incrementCounter(financialYear);
+
       } catch (cntErr) {
         const randomSeq = Math.floor(1000 + Math.random() * 9000);
         invoiceNumber = `CAB/${financialYear}/${randomSeq}`;
@@ -213,7 +242,16 @@ const createOrder = asyncHandler(async (req, res) => {
       deliveryCharge: false,
       platformFees: false,
       readyToShip: false,
+      isCustomOrder: req.body.isCustomOrder || false,
+      orderType: req.body.orderType || (req.body.isCustomOrder ? "custom-print" : "standard"),
     });
+
+    // Decrement inventory stock for shop products (store)
+    if (Array.isArray(storeOrderItems)) {
+      for (const item of storeOrderItems) {
+        await decrementProductStock(item);
+      }
+    }
 
     return res.status(201).json({
       status: true,
@@ -401,6 +439,13 @@ const createOrder = asyncHandler(async (req, res) => {
   }
 
   await incrementCounter(financialYear);
+
+  // Decrement inventory stock for shop products (online)
+  if (Array.isArray(orderItems)) {
+    for (const item of orderItems) {
+      await decrementProductStock(item);
+    }
+  }
 
   if (coupon) {
     const couponData = await Coupon.findOne({ code: coupon });
@@ -893,9 +938,10 @@ const getOrderById = asyncHandler(async (req, res) => {
       }
       if (!it.imageInfo?.image?.title && it.name) {
         it.imageInfo = it.imageInfo || {};
-        it.imageInfo.image = it.imageInfo.image || {};
-        if (!it.imageInfo.image.title) {
-          it.imageInfo.image.title = it.name;
+        if (typeof it.imageInfo.image === 'object' && it.imageInfo.image !== null) {
+          if (!it.imageInfo.image.title) {
+            it.imageInfo.image.title = it.name;
+          }
         }
       }
       return it;
@@ -1037,19 +1083,47 @@ const calculateCartItemsPrice = async (
       const area = (width || 0) * (height || 0);
 
       if (!paperId && imageId && !isCustom) {
+        // 1. Check if item is a Shop Product
+        if (item.productId || item.itemType === "product" || item.type === "product" || item.mode === "product") {
+          const prodId = item.productId || imageId;
+          const product = await Product.findById(prodId);
+          if (product) {
+            const qty = Math.max(1, parseInt(item.quantity, 10) || 1);
+            const unitPrice = typeof product.discountedPrice === 'number' && product.discountedPrice >= 0 && product.discountedPrice < product.price ? product.discountedPrice : Number(product.price) || 0;
+            const pPrice = unitPrice * qty;
+            subtotal += pPrice;
+            totalFinalPrice += pPrice;
+            rawCouponDiscount += pPrice * (couponDiscountPercentage / 100);
+            continue;
+          }
+        }
+
+        // 2. Look up in ImageVault (digital photo download)
         const image = await ImageVault.findById(imageId);
+        if (image) {
+          const imagePrice =
+            resolution === "small"
+              ? image.price?.small || 0
+              : resolution === "medium"
+                ? image.price?.medium || 0
+                : image.price?.original || 0;
 
-        const imagePrice =
-          resolution === "small"
-            ? image.price.small
-            : resolution === "medium"
-              ? image.price.medium
-              : image.price.original;
+          subtotal += imagePrice;
+          totalFinalPrice += imagePrice;
+          rawCouponDiscount += imagePrice * (couponDiscountPercentage / 100);
+          continue;
+        }
 
-        subtotal += imagePrice;
-        totalFinalPrice += imagePrice;
-
-        rawCouponDiscount += imagePrice * (couponDiscountPercentage / 100);
+        // 3. Fallback: check if imageId matches a Product
+        const fallbackProduct = await Product.findById(imageId);
+        if (fallbackProduct) {
+          const qty = Math.max(1, parseInt(item.quantity, 10) || 1);
+          const pPrice = (Number(fallbackProduct.price) || 0) * qty;
+          subtotal += pPrice;
+          totalFinalPrice += pPrice;
+          rawCouponDiscount += pPrice * (couponDiscountPercentage / 100);
+          continue;
+        }
 
         continue;
       }
@@ -1632,20 +1706,50 @@ const calculateCartPrice = async (req, res) => {
       const area = (width || 0) * (height || 0);
 
       if (!paperId && imageId && !isCustom) {
+        // 1. Check if item is a Shop Product
+        if (item.productId || item.itemType === "product" || item.type === "product" || item.mode === "product") {
+          const prodId = item.productId || imageId;
+          const product = await Product.findById(prodId);
+          if (product) {
+            const qty = Math.max(1, parseInt(item.quantity, 10) || 1);
+            const unitPrice = typeof product.discountedPrice === 'number' && product.discountedPrice >= 0 && product.discountedPrice < product.price ? product.discountedPrice : Number(product.price) || 0;
+            const pPrice = unitPrice * qty;
+            subtotal += pPrice;
+            totalFinalPrice += pPrice;
+            totalImagePrice += pPrice;
+            rawCouponDiscount += pPrice * (couponDiscountPercentage / 100);
+            continue;
+          }
+        }
+
+        // 2. Look up in ImageVault (digital photo download)
         const image = await ImageVault.findById(imageId);
+        if (image) {
+          const imagePrice =
+            resolution === "small"
+              ? image.price?.small || 0
+              : resolution === "medium"
+                ? image.price?.medium || 0
+                : image.price?.original || 0;
 
-        const imagePrice =
-          resolution === "small"
-            ? image.price.small
-            : resolution === "medium"
-              ? image.price.medium
-              : image.price.original;
+          subtotal += imagePrice;
+          totalFinalPrice += imagePrice;
+          totalImagePrice += imagePrice;
+          rawCouponDiscount += imagePrice * (couponDiscountPercentage / 100);
+          continue;
+        }
 
-        subtotal += imagePrice;
-        totalFinalPrice += imagePrice;
-        totalImagePrice += imagePrice;
-
-        rawCouponDiscount += imagePrice * (couponDiscountPercentage / 100);
+        // 3. Fallback: check if imageId matches a Product
+        const fallbackProduct = await Product.findById(imageId);
+        if (fallbackProduct) {
+          const qty = Math.max(1, parseInt(item.quantity, 10) || 1);
+          const pPrice = (Number(fallbackProduct.price) || 0) * qty;
+          subtotal += pPrice;
+          totalFinalPrice += pPrice;
+          totalImagePrice += pPrice;
+          rawCouponDiscount += pPrice * (couponDiscountPercentage / 100);
+          continue;
+        }
 
         continue;
       }

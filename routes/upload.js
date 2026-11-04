@@ -722,35 +722,55 @@ router.post(
 async function compressToExactSize(buffer, targetKB = 500) {
   const targetBytes = targetKB * 1024;
 
-  // Step 1: Resize based on an estimated megapixels ratio
-  const megapixels = targetBytes / (100 * 1024); // 100KB per MP approx.
-  const side = Math.sqrt(megapixels) * 1000; // Estimate size from MP
-
-  // Step 2: Resize image
+  // Step 1: Resize down to at most 1600px on the longest side
+  // (keeps enough detail; the thumbnail pipeline already caps at 1600px)
   const resizedBuffer = await sharp(buffer)
     .rotate()
     .resize({
-      width: Math.round(side),
-      height: Math.round(side),
+      width: 1600,
+      height: 1600,
       fit: "inside",
       withoutEnlargement: true,
     })
     .toBuffer();
 
-  // Step 3: Compress to WebP
-  let outputBuffer = await sharp(resizedBuffer)
-    .rotate()
-    .webp({
-      quality: 20, // Adjust for balance
-      effort: 6, // Medium compression
-      nearLossless: false,
-      smartSubsample: true,
-      lossless: false,
-      alphaQuality: 50,
-    })
-    .toBuffer();
+  // Step 2: Iterative quality reduction — start high, step down until we fit
+  // Minimum quality floor is 40 to avoid visible blur.
+  let quality = 70;
+  let outputBuffer;
 
-  console.log(`Final size: ${(outputBuffer.byteLength / 1024).toFixed(2)} KB`);
+  while (quality >= 40) {
+    outputBuffer = await sharp(resizedBuffer)
+      .webp({
+        quality,
+        effort: 4,
+        nearLossless: false,
+        smartSubsample: true,
+        lossless: false,
+      })
+      .toBuffer();
+
+    if (outputBuffer.byteLength <= targetBytes) {
+      break;
+    }
+    quality -= 10;
+  }
+
+  // Step 3: If still over budget at quality 40, do a final resize to fit
+  if (outputBuffer.byteLength > targetBytes) {
+    // Estimate scale factor based on area ratio
+    const scaleFactor = Math.sqrt(targetBytes / outputBuffer.byteLength);
+    const meta = await sharp(resizedBuffer).metadata();
+    const newWidth = Math.max(400, Math.round(meta.width * scaleFactor));
+    const newHeight = Math.max(400, Math.round(meta.height * scaleFactor));
+
+    outputBuffer = await sharp(resizedBuffer)
+      .resize({ width: newWidth, height: newHeight, fit: "inside" })
+      .webp({ quality: 50, effort: 4 })
+      .toBuffer();
+  }
+
+  console.log(`[compressToExactSize] Final size: ${(outputBuffer.byteLength / 1024).toFixed(2)} KB at quality ~${quality}`);
   return outputBuffer;
 }
 
@@ -930,6 +950,10 @@ router.post(
       const imageSizeInMP = (width * height) / 1_000_000;
       console.log(`Original Image Size: ${imageSizeInMP.toFixed(2)} MP`);
 
+      // Track actual thumbnail dimensions after processing
+      let thumbActualWidth = null;
+      let thumbActualHeight = null;
+
       // const resolutions = {
       //   small: {
       //     width: Math.round(Math.sqrt(2 * 1_000_000 * Math.max(width / height, 1))),
@@ -1024,6 +1048,9 @@ router.post(
             "x",
             metadataAfterWebP.height
           );
+          // Store for returnedResolutions
+          thumbActualWidth = metadataAfterWebP.width;
+          thumbActualHeight = metadataAfterWebP.height;
         } else if (key === "original") {
           processedBuffer = correctedImageBuffer;
         } else {
@@ -1064,7 +1091,10 @@ router.post(
       }, {});
       const originalImageMetaData = await sharp(imageBuffer).metadata();
       const returnedResolutions = {
-        thumbnail: { width, height },
+        thumbnail: {
+          width: thumbActualWidth || width,
+          height: thumbActualHeight || height,
+        },
         original: {
           width: originalImageMetaData.width,
           height: originalImageMetaData.height,

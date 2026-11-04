@@ -7,7 +7,7 @@ const mongoose = require("mongoose");
 // @access  Private/Admin
 const createProduct = async (req, res) => {
   try {
-    const { name, price, description, images, mainImage, isPublished, category } = req.body;
+    const { name, price, discount, discountedPrice, stock, description, images, mainImage, isPublished, category } = req.body;
 
     if (!name || name.trim() === "") {
       return res.status(400).json({ success: false, message: "Product name is required" });
@@ -32,9 +32,33 @@ const createProduct = async (req, res) => {
         ? imageList[0]
         : "";
 
+    const parsedStock =
+      stock !== undefined && stock !== null && !isNaN(stock)
+        ? Math.max(0, parseInt(stock, 10))
+        : 0;
+
+    let parsedDiscount =
+      discount !== undefined && discount !== null && discount !== "" && !isNaN(discount)
+        ? Math.min(100, Math.max(0, Number(discount)))
+        : 0;
+
+    let parsedDiscountedPrice =
+      discountedPrice !== undefined && discountedPrice !== null && discountedPrice !== "" && !isNaN(discountedPrice)
+        ? Math.max(0, Number(discountedPrice))
+        : null;
+
+    if (parsedDiscount > 0 && (parsedDiscountedPrice === null || parsedDiscountedPrice === undefined)) {
+      parsedDiscountedPrice = Math.round(Number(price) * (1 - parsedDiscount / 100) * 100) / 100;
+    } else if (parsedDiscountedPrice !== null && parsedDiscount === 0 && Number(price) > 0 && parsedDiscountedPrice < Number(price)) {
+      parsedDiscount = Math.round(((Number(price) - parsedDiscountedPrice) / Number(price)) * 100);
+    }
+
     const newProduct = new Product({
       name: name.trim(),
       price: Number(price),
+      discount: parsedDiscount,
+      discountedPrice: parsedDiscountedPrice,
+      stock: parsedStock,
       description: description.trim(),
       images: imageList,
       mainImage: primaryImage,
@@ -117,8 +141,19 @@ const getShopProducts = async (req, res) => {
     const limit = Math.max(1, parseInt(req.query.limit) || 24);
     const skip = (page - 1) * limit;
 
-    // Public shop returns only published products
-    const filter = { isPublished: true };
+    // Public shop returns only published products with available inventory (stock > 0)
+    const filter = {
+      isPublished: true,
+      $and: [
+        {
+          $or: [
+            { stock: { $gt: 0 } },
+            { stock: { $exists: false } },
+            { stock: null },
+          ],
+        },
+      ],
+    };
 
     if (req.query.category && req.query.category !== "all" && req.query.category.trim() !== "") {
       filter.category = req.query.category.trim();
@@ -210,7 +245,7 @@ const updateProduct = async (req, res) => {
       return res.status(404).json({ success: false, message: "Product not found" });
     }
 
-    const { name, price, description, images, mainImage, isPublished, category } = req.body;
+    const { name, price, discount, discountedPrice, stock, description, images, mainImage, isPublished, category } = req.body;
 
     if (name !== undefined) {
       if (typeof name !== "string" || name.trim() === "") {
@@ -224,6 +259,40 @@ const updateProduct = async (req, res) => {
         return res.status(400).json({ success: false, message: "Price must be a valid positive number" });
       }
       product.price = Number(price);
+    }
+
+    if (discount !== undefined) {
+      product.discount =
+        discount !== null && discount !== "" && !isNaN(discount)
+          ? Math.min(100, Math.max(0, Number(discount)))
+          : 0;
+    }
+
+    if (discountedPrice !== undefined) {
+      product.discountedPrice =
+        discountedPrice !== null && discountedPrice !== "" && !isNaN(discountedPrice)
+          ? Math.max(0, Number(discountedPrice))
+          : null;
+    }
+
+    // Auto-calculate if one is updated without the other
+    if (product.discount > 0 && (product.discountedPrice === null || product.discountedPrice === undefined)) {
+      product.discountedPrice = Math.round(product.price * (1 - product.discount / 100) * 100) / 100;
+    } else if (
+      product.discountedPrice !== null &&
+      product.discountedPrice !== undefined &&
+      (!product.discount || product.discount === 0) &&
+      product.price > 0 &&
+      product.discountedPrice < product.price
+    ) {
+      product.discount = Math.round(((product.price - product.discountedPrice) / product.price) * 100);
+    }
+
+    if (stock !== undefined && stock !== null) {
+      if (isNaN(stock) || Number(stock) < 0) {
+        return res.status(400).json({ success: false, message: "Stock must be a valid non-negative number" });
+      }
+      product.stock = Math.max(0, parseInt(stock, 10));
     }
 
     if (description !== undefined) {

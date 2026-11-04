@@ -23,6 +23,27 @@ const getStores = asyncHandler(async (req, res) => {
   res.status(200).json({ status: true, stores: formattedStores });
 });
 
+// @desc    Get active stores for public selection
+// @route   GET /api/stores/active
+// @access  Public
+const getActiveStores = asyncHandler(async (req, res) => {
+  const stores = await Store.find({ status: "active" }).sort({ name: 1 });
+  
+  const formattedStores = stores.map((s) => ({
+    _id: s._id,
+    storeName: s.name,
+    storeId: s.storeCode,
+    email: s.email,
+    phone: s.phone,
+    address: s.address?.street || s.address?.city || "",
+    operatingHours: s.operatingHours,
+    status: "Active",
+    createdAt: s.createdAt,
+  }));
+
+  res.status(200).json({ status: true, stores: formattedStores });
+});
+
 // @desc    Create a store
 // @route   POST /api/stores
 // @access  Private (Admin)
@@ -166,6 +187,7 @@ const deleteStore = asyncHandler(async (req, res) => {
 
 module.exports = {
   getStores,
+  getActiveStores,
   createStore,
   updateStore,
   updateStoreStatus,
