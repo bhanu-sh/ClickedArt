@@ -41,6 +41,10 @@ const storeSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    banners: {
+      type: [String],
+      default: [],
+    },
     operatingHours: {
       type: String,
       default: "9:00 AM - 9:00 PM (Mon - Sat)",

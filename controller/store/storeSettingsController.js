@@ -43,6 +43,7 @@ const updateStoreSettings = asyncHandler(async (req, res) => {
     settings: storeSettings,
     googleMapUrl,
     photos,
+    banners,
   } = req.body;
 
   const store = await Store.findById(storeId);
@@ -65,6 +66,10 @@ const updateStoreSettings = asyncHandler(async (req, res) => {
 
   if (photos !== undefined) {
     store.photos = Array.isArray(photos) ? photos : [];
+  }
+
+  if (banners !== undefined) {
+    store.banners = Array.isArray(banners) ? banners : [];
   }
 
   if (address) {

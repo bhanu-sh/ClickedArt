@@ -19,6 +19,7 @@ const getStores = asyncHandler(async (req, res) => {
     fullAddress: s.address || {},
     googleMapUrl: s.googleMapUrl || s.address?.googleMapUrl || "",
     photos: s.photos || [],
+    banners: s.banners || [],
     operatingHours: s.operatingHours || "",
     status: s.status === "active" ? "Active" : "Inactive",
     createdAt: s.createdAt,
@@ -43,6 +44,7 @@ const getActiveStores = asyncHandler(async (req, res) => {
     fullAddress: s.address || {},
     googleMapUrl: s.googleMapUrl || s.address?.googleMapUrl || "",
     photos: s.photos || [],
+    banners: s.banners || [],
     operatingHours: s.operatingHours || "",
     status: "Active",
     createdAt: s.createdAt,
@@ -66,6 +68,7 @@ const createStore = asyncHandler(async (req, res) => {
     operatingHours,
     googleMapUrl,
     photos,
+    banners,
     street,
     city,
     state,
@@ -105,6 +108,7 @@ const createStore = asyncHandler(async (req, res) => {
     address: finalAddress,
     googleMapUrl: googleMapUrl || finalAddress.googleMapUrl || "",
     photos: Array.isArray(photos) ? photos : [],
+    banners: Array.isArray(banners) ? banners : [],
     operatingHours: operatingHours || "9:00 AM - 9:00 PM (Mon - Sat)",
     status: status === "Active" ? "active" : "inactive",
   });
@@ -135,6 +139,7 @@ const updateStore = asyncHandler(async (req, res) => {
     operatingHours,
     googleMapUrl,
     photos,
+    banners,
     street,
     city,
     state,
@@ -158,6 +163,9 @@ const updateStore = asyncHandler(async (req, res) => {
   }
   if (photos !== undefined) {
     store.photos = Array.isArray(photos) ? photos : [];
+  }
+  if (banners !== undefined) {
+    store.banners = Array.isArray(banners) ? banners : [];
   }
 
   if (
