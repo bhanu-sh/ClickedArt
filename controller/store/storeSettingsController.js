@@ -35,7 +35,7 @@ const getStoreSettings = asyncHandler(async (req, res) => {
 const updateStoreSettings = asyncHandler(async (req, res) => {
   const storeId = req.storeId;
   const {
-    name,
+    name: storeName,
     phone,
     email,
     address,
@@ -54,7 +54,7 @@ const updateStoreSettings = asyncHandler(async (req, res) => {
   }
 
 
-  if (name) store.name = name.trim();
+  if (storeName) store.name = storeName.trim();
   if (phone) store.phone = phone.trim();
   if (email) store.email = email.trim();
   if (operatingHours) store.operatingHours = operatingHours.trim();
