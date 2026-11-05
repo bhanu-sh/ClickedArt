@@ -34,7 +34,16 @@ const getStoreSettings = asyncHandler(async (req, res) => {
 // @access  Store Manager
 const updateStoreSettings = asyncHandler(async (req, res) => {
   const storeId = req.storeId;
-  const { name, phone, email, address, operatingHours, settings } = req.body;
+  const {
+    name,
+    phone,
+    email,
+    address,
+    operatingHours,
+    settings: storeSettings,
+    googleMapUrl,
+    photos,
+  } = req.body;
 
   const store = await Store.findById(storeId);
   if (!store) {
@@ -50,6 +59,14 @@ const updateStoreSettings = asyncHandler(async (req, res) => {
   if (email) store.email = email.trim();
   if (operatingHours) store.operatingHours = operatingHours.trim();
 
+  if (googleMapUrl !== undefined) {
+    store.googleMapUrl = typeof googleMapUrl === "string" ? googleMapUrl.trim() : "";
+  }
+
+  if (photos !== undefined) {
+    store.photos = Array.isArray(photos) ? photos : [];
+  }
+
   if (address) {
     store.address = {
       street: address.street !== undefined ? address.street : store.address.street,
@@ -57,21 +74,25 @@ const updateStoreSettings = asyncHandler(async (req, res) => {
       state: address.state !== undefined ? address.state : store.address.state,
       pincode: address.pincode !== undefined ? address.pincode : store.address.pincode,
       country: address.country !== undefined ? address.country : store.address.country,
+      googleMapUrl: address.googleMapUrl !== undefined ? address.googleMapUrl.trim() : (store.address?.googleMapUrl || store.googleMapUrl || ""),
     };
+    if (address.googleMapUrl !== undefined && googleMapUrl === undefined) {
+      store.googleMapUrl = address.googleMapUrl.trim();
+    }
   }
 
-  if (settings) {
+  if (storeSettings) {
     store.settings = {
-      currency: settings.currency || store.settings.currency || "INR",
-      currencySymbol: settings.currencySymbol || store.settings.currencySymbol || "₹",
-      taxRate: settings.taxRate !== undefined ? Number(settings.taxRate) : store.settings.taxRate,
+      currency: storeSettings.currency || store.settings.currency || "INR",
+      currencySymbol: storeSettings.currencySymbol || store.settings.currencySymbol || "₹",
+      taxRate: storeSettings.taxRate !== undefined ? Number(storeSettings.taxRate) : store.settings.taxRate,
       lowStockThreshold:
-        settings.lowStockThreshold !== undefined
-          ? Math.max(1, Number(settings.lowStockThreshold))
+        storeSettings.lowStockThreshold !== undefined
+          ? Math.max(1, Number(storeSettings.lowStockThreshold))
           : store.settings.lowStockThreshold,
       receiptNotes:
-        settings.receiptNotes !== undefined
-          ? settings.receiptNotes
+        storeSettings.receiptNotes !== undefined
+          ? storeSettings.receiptNotes
           : store.settings.receiptNotes,
     };
   }

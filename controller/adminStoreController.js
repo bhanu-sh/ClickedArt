@@ -15,7 +15,11 @@ const getStores = asyncHandler(async (req, res) => {
     storeId: s.storeCode,
     email: s.email,
     phone: s.phone,
-    address: s.address?.street || s.address?.city || "",
+    address: s.address?.street || (typeof s.address === "string" ? s.address : "") || s.address?.city || "",
+    fullAddress: s.address || {},
+    googleMapUrl: s.googleMapUrl || s.address?.googleMapUrl || "",
+    photos: s.photos || [],
+    operatingHours: s.operatingHours || "",
     status: s.status === "active" ? "Active" : "Inactive",
     createdAt: s.createdAt,
   }));
@@ -35,8 +39,11 @@ const getActiveStores = asyncHandler(async (req, res) => {
     storeId: s.storeCode,
     email: s.email,
     phone: s.phone,
-    address: s.address?.street || s.address?.city || "",
-    operatingHours: s.operatingHours,
+    address: s.address?.street || (typeof s.address === "string" ? s.address : "") || s.address?.city || "",
+    fullAddress: s.address || {},
+    googleMapUrl: s.googleMapUrl || s.address?.googleMapUrl || "",
+    photos: s.photos || [],
+    operatingHours: s.operatingHours || "",
     status: "Active",
     createdAt: s.createdAt,
   }));
@@ -48,7 +55,23 @@ const getActiveStores = asyncHandler(async (req, res) => {
 // @route   POST /api/stores
 // @access  Private (Admin)
 const createStore = asyncHandler(async (req, res) => {
-  const { storeName, storeId, email, password, phone, address, status } = req.body;
+  const {
+    storeName,
+    storeId,
+    email,
+    password,
+    phone,
+    address,
+    status,
+    operatingHours,
+    googleMapUrl,
+    photos,
+    street,
+    city,
+    state,
+    pincode,
+    country,
+  } = req.body;
 
   if (!storeName || !storeId || !email || !password || !phone) {
     return res.status(400).json({ status: false, message: "Missing required fields" });
@@ -64,13 +87,25 @@ const createStore = asyncHandler(async (req, res) => {
     return res.status(400).json({ status: false, message: "Store email already used by a user" });
   }
 
+  const finalAddress = {
+    street: street || (typeof address === "string" ? address : address?.street) || "",
+    city: city || address?.city || "",
+    state: state || address?.state || "",
+    pincode: pincode || address?.pincode || "",
+    country: country || address?.country || "India",
+    googleMapUrl: googleMapUrl || address?.googleMapUrl || "",
+  };
+
   // Create store
   const store = await Store.create({
     name: storeName,
     storeCode: storeId,
     email: email.toLowerCase(),
     phone: phone || "",
-    address: { street: address || "" },
+    address: finalAddress,
+    googleMapUrl: googleMapUrl || finalAddress.googleMapUrl || "",
+    photos: Array.isArray(photos) ? photos : [],
+    operatingHours: operatingHours || "9:00 AM - 9:00 PM (Mon - Sat)",
     status: status === "Active" ? "active" : "inactive",
   });
 
@@ -91,7 +126,21 @@ const createStore = asyncHandler(async (req, res) => {
 // @route   PUT /api/stores/:id
 // @access  Private (Admin)
 const updateStore = asyncHandler(async (req, res) => {
-  const { storeName, email, phone, address, status } = req.body;
+  const {
+    storeName,
+    email,
+    phone,
+    address,
+    status,
+    operatingHours,
+    googleMapUrl,
+    photos,
+    street,
+    city,
+    state,
+    pincode,
+    country,
+  } = req.body;
   const store = await Store.findById(req.params.id);
 
   if (!store) {
@@ -101,9 +150,71 @@ const updateStore = asyncHandler(async (req, res) => {
   store.name = storeName || store.name;
   store.email = email ? email.toLowerCase() : store.email;
   store.phone = phone || store.phone;
-  if (address) {
-    store.address = { street: address };
+  if (operatingHours !== undefined) {
+    store.operatingHours = operatingHours;
   }
+  if (googleMapUrl !== undefined) {
+    store.googleMapUrl = googleMapUrl;
+  }
+  if (photos !== undefined) {
+    store.photos = Array.isArray(photos) ? photos : [];
+  }
+
+  if (
+    address !== undefined ||
+    street !== undefined ||
+    city !== undefined ||
+    state !== undefined ||
+    pincode !== undefined ||
+    country !== undefined ||
+    googleMapUrl !== undefined
+  ) {
+    const currentAddr = store.address || {};
+    store.address = {
+      street:
+        street !== undefined
+          ? street
+          : typeof address === "object" && address?.street !== undefined
+          ? address.street
+          : typeof address === "string" && address
+          ? address
+          : currentAddr.street || "",
+      city:
+        city !== undefined
+          ? city
+          : typeof address === "object" && address?.city !== undefined
+          ? address.city
+          : currentAddr.city || "",
+      state:
+        state !== undefined
+          ? state
+          : typeof address === "object" && address?.state !== undefined
+          ? address.state
+          : currentAddr.state || "",
+      pincode:
+        pincode !== undefined
+          ? pincode
+          : typeof address === "object" && address?.pincode !== undefined
+          ? address.pincode
+          : currentAddr.pincode || "",
+      country:
+        country !== undefined
+          ? country
+          : typeof address === "object" && address?.country !== undefined
+          ? address.country
+          : currentAddr.country || "India",
+      googleMapUrl:
+        googleMapUrl !== undefined
+          ? googleMapUrl
+          : typeof address === "object" && address?.googleMapUrl !== undefined
+          ? address.googleMapUrl
+          : currentAddr.googleMapUrl || store.googleMapUrl || "",
+    };
+    if (store.address.googleMapUrl && !store.googleMapUrl) {
+      store.googleMapUrl = store.address.googleMapUrl;
+    }
+  }
+
   if (status) {
     store.status = status === "Active" ? "active" : "inactive";
   }

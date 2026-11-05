@@ -821,6 +821,68 @@ const resendOTP = asyncHandler(async (req, res) => {
   }
 });
 
+// Fuzzy matching helpers for typo-tolerant / closest search
+function levenshteinDistance(a, b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1];
+      } else {
+        dp[i][j] = 1 + Math.min(
+          dp[i - 1][j],
+          dp[i][j - 1],
+          dp[i - 1][j - 1]
+        );
+      }
+    }
+  }
+  return dp[m][n];
+}
+
+function getSimilarity(query, target) {
+  if (!query || !target) return 0;
+  const q = query.toLowerCase().trim();
+  const t = target.toLowerCase().trim();
+
+  if (q === t) return 1.0;
+  if (t.includes(q)) return 0.95;
+
+  const words = t.split(/[\s_.-]+/).filter(Boolean);
+  let bestScore = 0;
+  for (const word of words) {
+    if (word === q) return 0.95;
+    if (word.includes(q)) return 0.90;
+    const dist = levenshteinDistance(q, word);
+    const maxLen = Math.max(q.length, word.length);
+    const wordScore = (maxLen - dist) / maxLen;
+    if (wordScore > bestScore) {
+      bestScore = wordScore;
+    }
+  }
+
+  const qClean = q.replace(/[\s_.-]+/g, "");
+  const tClean = t.replace(/[\s_.-]+/g, "");
+  if (qClean === tClean) return 0.98;
+  if (tClean.includes(qClean)) return 0.92;
+
+  const dist = levenshteinDistance(qClean, tClean);
+  const maxLen = Math.max(qClean.length, tClean.length);
+  const fullScore = (maxLen - dist) / maxLen;
+
+  return Math.max(bestScore, fullScore);
+}
+
 const searchPhotographers = async (req, res) => {
   let { Query, pageSize = 20, pageNumber = 1 } = req.query;
 
@@ -831,72 +893,166 @@ const searchPhotographers = async (req, res) => {
   pageSize = parseInt(pageSize, 10);
   pageNumber = parseInt(pageNumber, 10);
 
-  const results = await Photographer.aggregate([
-    {
-      $search: {
-        index: "photographerindex",
-        compound: {
-          should: [
-            {
-              autocomplete: {
-                query: Query,
-                path: "username",
-                fuzzy: { maxEdits: 1 },
-                score: { boost: { value: 10 } },
-              },
-            },
-            {
-              autocomplete: {
-                query: Query,
-                path: "firstName",
-                fuzzy: { maxEdits: 1 },
-                score: { boost: { value: 5 } },
-              },
-            },
-            {
-              autocomplete: {
-                query: Query,
-                path: "lastName",
-                fuzzy: { maxEdits: 1 },
-                score: { boost: { value: 5 } },
-              },
-            },
-          ],
-          minimumShouldMatch: 1,
-        },
-      },
-    },
-    {
-      $addFields: {
-        score: { $meta: "searchScore" },
-      },
-    },
-    {
-      $match: {
-        score: { $gte: 5 },
-      },
-    },
-    { $limit: pageSize },
-  ]);
+  let results = [];
+  let total = 0;
 
-  const totalDocuments = await Photographer.aggregate([
-    {
-      $search: {
-        index: "photographerindex",
-        text: {
-          query: Query,
-          path: ["firstName", "lastName", "email", "bio"],
-          fuzzy: {
-            maxEdits: 2,
-            prefixLength: 3,
+  // 1. Try Atlas Search index first if available
+  try {
+    results = await Photographer.aggregate([
+      {
+        $search: {
+          index: "photographerindex",
+          compound: {
+            should: [
+              {
+                autocomplete: {
+                  query: Query,
+                  path: "username",
+                  fuzzy: { maxEdits: 1 },
+                  score: { boost: { value: 10 } },
+                },
+              },
+              {
+                autocomplete: {
+                  query: Query,
+                  path: "firstName",
+                  fuzzy: { maxEdits: 1 },
+                  score: { boost: { value: 5 } },
+                },
+              },
+              {
+                autocomplete: {
+                  query: Query,
+                  path: "lastName",
+                  fuzzy: { maxEdits: 1 },
+                  score: { boost: { value: 5 } },
+                },
+              },
+            ],
+            minimumShouldMatch: 1,
           },
         },
       },
-    },
-    { $count: "total" },
-  ]);
-  const total = totalDocuments.length > 0 ? totalDocuments[0].total : 1;
-  const pageCount = Math.ceil(total / pageSize);
+      {
+        $addFields: {
+          score: { $meta: "searchScore" },
+        },
+      },
+      {
+        $match: {
+          score: { $gte: 5 },
+        },
+      },
+      { $limit: pageSize },
+    ]);
+
+    if (results && results.length > 0) {
+      const totalDocuments = await Photographer.aggregate([
+        {
+          $search: {
+            index: "photographerindex",
+            text: {
+              query: Query,
+              path: ["firstName", "lastName", "email", "bio"],
+              fuzzy: {
+                maxEdits: 2,
+                prefixLength: 3,
+              },
+            },
+          },
+        },
+        { $count: "total" },
+      ]);
+      total = totalDocuments.length > 0 ? totalDocuments[0].total : results.length;
+    }
+  } catch (err) {
+    console.error("Atlas search error, falling back to regex:", err.message);
+    results = [];
+  }
+
+  // 2. Fallback to Regex search if Atlas search returned no results or is unindexed
+  if (!results || results.length === 0) {
+    const escapedQuery = Query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(escapedQuery, "i");
+    const filter = {
+      $or: [
+        { username: regex },
+        { firstName: regex },
+        { lastName: regex },
+        { bio: regex },
+      ],
+    };
+
+    total = await Photographer.countDocuments(filter);
+    if (total > 0) {
+      const docs = await Photographer.find(filter)
+        .skip((pageNumber - 1) * pageSize)
+        .limit(pageSize);
+
+      results = await Promise.all(
+        docs.map(async (doc) => {
+          const photosCount = await ImageVault.countDocuments({
+            photographer: doc._id,
+            isActive: true,
+          });
+          return {
+            ...doc.toObject(),
+            photosCount,
+          };
+        })
+      );
+    }
+  }
+
+  // 3. Fallback to Fuzzy / Closest-match search (for typos like "SClickedart", "clickdeart", "brijsh")
+  if (!results || results.length === 0) {
+    const allPhotographers = await Photographer.find()
+      .select("username firstName lastName bio profileImage coverImage role active createdAt")
+      .lean();
+
+    const scored = allPhotographers
+      .map((p) => {
+        const uScore = getSimilarity(Query, p.username || "");
+        const fScore = getSimilarity(Query, p.firstName || "");
+        const lScore = getSimilarity(Query, p.lastName || "");
+        const fullNameScore = getSimilarity(Query, `${p.firstName || ""} ${p.lastName || ""}`.trim());
+        const maxScore = Math.max(uScore, fScore, lScore, fullNameScore);
+        return { photographer: p, score: maxScore };
+      })
+      .filter((item) => item.score >= 0.60)
+      .sort((a, b) => b.score - a.score);
+
+    total = scored.length;
+    const paged = scored.slice((pageNumber - 1) * pageSize, pageNumber * pageSize);
+
+    results = await Promise.all(
+      paged.map(async ({ photographer: doc }) => {
+        const photosCount = await ImageVault.countDocuments({
+          photographer: doc._id,
+          isActive: true,
+        });
+        return {
+          ...doc,
+          photosCount,
+        };
+      })
+    );
+  } else if (results.length > 0 && !results[0].photosCount) {
+    results = await Promise.all(
+      results.map(async (doc) => {
+        const photosCount = await ImageVault.countDocuments({
+          photographer: doc._id,
+          isActive: true,
+        });
+        return {
+          ...doc,
+          photosCount,
+        };
+      })
+    );
+  }
+
+  const pageCount = Math.ceil(total / pageSize) || 1;
   res.status(200).json({ results, pageCount });
 };
 

@@ -14,6 +14,7 @@ const Artwork = require("../models/artworkModel.js");
 const ArtworkCategory = require("../models/artworkCategoryModel.js");
 const Blog = require("../models/socials/blogModel.js");
 const Paper = require("../models/imagebase/paperModel.js");
+const GalleryWrap = require("../models/imagebase/galleryWrapModel.js");
 const Frame = require("../models/imagebase/frameModel.js");
 const Mount = require("../models/imagebase/mountModel.js");
 const Story = require("../models/storyModel.js");
@@ -180,6 +181,7 @@ const documentCountsForAdmin = asyncHandler(async (req, res) => {
       totalFrames,
       totalMounts,
       totalPapers,
+      totalGalleryWraps,
       totalOrders,
       totalDigitalOrders,
       totalPrintOrders,
@@ -235,6 +237,7 @@ const documentCountsForAdmin = asyncHandler(async (req, res) => {
       safeCount(Frame.countDocuments()),
       safeCount(Mount.countDocuments()),
       safeCount(Paper.countDocuments()),
+      safeCount(GalleryWrap.countDocuments()),
       safeCount(Order.countDocuments({ ...orderMatch })),
       safeCount(Order.countDocuments({ ...orderMatch, printStatus: "no-print" })),
       safeCount(Order.countDocuments({ ...orderMatch, printStatus: { $ne: "no-print" } })),
@@ -301,6 +304,7 @@ const documentCountsForAdmin = asyncHandler(async (req, res) => {
       totalFrames,
       totalMounts,
       totalPapers,
+      totalGalleryWraps,
       totalOrders,
       totalDigitalOrders,
       totalPrintOrders,

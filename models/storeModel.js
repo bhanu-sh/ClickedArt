@@ -31,6 +31,15 @@ const storeSchema = new mongoose.Schema(
       state: { type: String, default: "" },
       pincode: { type: String, default: "" },
       country: { type: String, default: "India" },
+      googleMapUrl: { type: String, default: "" },
+    },
+    googleMapUrl: {
+      type: String,
+      default: "",
+    },
+    photos: {
+      type: [String],
+      default: [],
     },
     operatingHours: {
       type: String,
