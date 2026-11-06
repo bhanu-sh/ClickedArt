@@ -267,6 +267,21 @@ const orderSchema = new mongoose.Schema(
       email: { type: String },
       pincode: { type: String },
       state: { type: String },
+      street: { type: String },
+      isStorePickup: { type: Boolean, default: false },
+      pickupStoreName: { type: String },
+      pickupStoreCode: { type: String },
+      pickupStoreId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Store",
+      },
+      pickupStoreAddress: { type: String },
+      pickupGoogleMapUrl: { type: String },
+    },
+    isStorePickup: {
+      type: Boolean,
+      default: false,
+      index: true,
     },
     waybill: {
       type: String,

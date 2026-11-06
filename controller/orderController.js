@@ -395,15 +395,91 @@ const createOrder = asyncHandler(async (req, res) => {
     const totalCgst = updatedItems.reduce((sum, item) => sum + (item.cgst || 0), 0);
     const totalGSTAmount = totalSgst + totalCgst;
 
+    // Detect if order has store pickup item or store reference
+    const pickupItem = updatedItems.find(
+      (item) =>
+        item.store ||
+        item.storeId ||
+        (typeof item.finishingOption === "string" &&
+          (item.finishingOption.toLowerCase().includes("store pick-up") ||
+            item.finishingOption.toLowerCase().includes("pick from store") ||
+            item.finishingOption.toLowerCase().includes("pick-up")))
+    );
+
+    let resolvedPickupStore = null;
+    const candidateStoreId =
+      req.body.store || (pickupItem?.store && String(pickupItem.store));
+    const candidateStoreCode = req.body.storeId || pickupItem?.storeId;
+
+    if (candidateStoreId && mongoose.Types.ObjectId.isValid(candidateStoreId)) {
+      resolvedPickupStore = await Store.findById(candidateStoreId);
+    } else if (candidateStoreCode) {
+      resolvedPickupStore = await Store.findOne({ storeCode: candidateStoreCode });
+    }
+
+    let finalShippingAddress = shippingAddress;
+    const isStorePickupOrder = Boolean(resolvedPickupStore || pickupItem);
+
+    if (resolvedPickupStore) {
+      const sAddr = resolvedPickupStore.address || {};
+      const sStreet = sAddr.street && sAddr.street !== ".." ? sAddr.street : "";
+      const sCity = sAddr.city || "";
+      const sState = sAddr.state || "";
+      const sPincode = sAddr.pincode || "";
+      const sCountry = sAddr.country || "India";
+      const sMap = resolvedPickupStore.googleMapUrl || sAddr.googleMapUrl || "";
+
+      const storeFormattedAddr = [
+        `${resolvedPickupStore.name} (Store Pick-up)`,
+        sStreet,
+        sCity,
+        sState ? `${sState} - ${sPincode}` : sPincode,
+      ]
+        .filter(Boolean)
+        .join(", ");
+
+      finalShippingAddress = {
+        address: storeFormattedAddr,
+        street: sStreet,
+        city: sCity || shippingAddress?.city || "",
+        state: sState || shippingAddress?.state || "",
+        pincode: sPincode || shippingAddress?.pincode || "",
+        country: sCountry,
+        landmark: `Store Code: ${resolvedPickupStore.storeCode}`,
+        area: resolvedPickupStore.name,
+        mobile: shippingAddress?.mobile || resolvedPickupStore.phone,
+        email: shippingAddress?.email || resolvedPickupStore.email,
+        isStorePickup: true,
+        pickupStoreName: resolvedPickupStore.name,
+        pickupStoreCode: resolvedPickupStore.storeCode,
+        pickupStoreId: resolvedPickupStore._id,
+        pickupStoreAddress: storeFormattedAddr,
+        pickupGoogleMapUrl: sMap,
+      };
+    } else if (pickupItem && pickupItem.storeName) {
+      finalShippingAddress = {
+        ...shippingAddress,
+        isStorePickup: true,
+        pickupStoreName: pickupItem.storeName,
+        pickupStoreCode: pickupItem.storeId,
+      };
+    }
+
     const order = new Order({
       orderSource: "ONLINE",
+      store: resolvedPickupStore
+        ? resolvedPickupStore._id
+        : (pickupItem?.store && mongoose.Types.ObjectId.isValid(pickupItem.store)
+          ? pickupItem.store
+          : undefined),
+      isStorePickup: isStorePickupOrder,
       userInfo: {
         user: userId,
         userType: type,
       },
       orderItems: updatedItems,
       paymentMethod,
-      shippingAddress,
+      shippingAddress: finalShippingAddress,
       discount: discountForEachOrder,
       totalAmount,
       orderStatus,
@@ -564,6 +640,7 @@ const getAllOrders = asyncHandler(async (req, res) => {
       ],
     })
     .populate("userInfo.user")
+    .populate("store", "name storeCode address phone email city state googleMapUrl")
     .sort({ createdAt: -1 })
     .skip((pageNumber - 1) * pageSize)
     .limit(pageSize);
@@ -814,7 +891,7 @@ const getOrderById = asyncHandler(async (req, res) => {
       ],
     })
     .populate("userInfo.user")
-    .populate("store", "name storeCode city state address email phone");
+    .populate("store", "name storeCode city state address email phone googleMapUrl");
 
   if (!order) {
     return res.status(404).send({ status: false, message: "Order not found" });
@@ -1949,6 +2026,7 @@ const updateReadyToShipStatus = asyncHandler(async (req, res) => {
 
 const getStoreOrders = asyncHandler(async (req, res) => {
   const storeId = req.storeId;
+  const storeCode = req.store?.storeCode;
   const {
     search,
     status,
@@ -1958,46 +2036,72 @@ const getStoreOrders = asyncHandler(async (req, res) => {
     limit = 15,
   } = req.query;
 
-  const query = { orderSource: { $in: ["STORE", "store"] } };
+  const andConditions = [];
+
   if (storeId) {
-    query.$or = [
+    const storeConditions = [
+      { orderSource: { $in: ["STORE", "store"] }, store: storeId },
+      { orderSource: { $in: ["STORE", "store"] }, store: null },
+      { orderSource: { $in: ["STORE", "store"] }, store: { $exists: false } },
       { store: storeId },
-      { store: null },
-      { store: { $exists: false } },
+      { "shippingAddress.pickupStoreId": storeId },
+      { "orderItems.store": storeId },
     ];
+    if (storeCode) {
+      storeConditions.push({ "orderItems.storeId": storeCode });
+      storeConditions.push({ "shippingAddress.pickupStoreCode": storeCode });
+    }
+    andConditions.push({ $or: storeConditions });
+  } else {
+    andConditions.push({
+      $or: [
+        { orderSource: { $in: ["STORE", "store"] } },
+        { isStorePickup: true },
+        { "shippingAddress.isStorePickup": true },
+        { store: { $ne: null } },
+        { "orderItems.store": { $exists: true, $ne: null } },
+      ],
+    });
   }
 
   // Status filter
   if (status && status !== "all") {
-    query.orderStatus = status;
+    andConditions.push({ orderStatus: status });
   }
 
   // Date range filter
   if (startDate || endDate) {
-    query.createdAt = {};
+    const dateQuery = {};
     if (startDate) {
       const start = new Date(startDate);
       start.setHours(0, 0, 0, 0);
-      query.createdAt.$gte = start;
+      dateQuery.$gte = start;
     }
     if (endDate) {
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
-      query.createdAt.$lte = end;
+      dateQuery.$lte = end;
     }
+    andConditions.push({ createdAt: dateQuery });
   }
 
   // Search filter
   if (search && search.trim() !== "") {
     const regex = new RegExp(search.trim(), "i");
-    query.$or = [
-      { orderNumber: regex },
-      { invoiceNumber: regex },
-      { "customer.name": regex },
-      { "customer.email": regex },
-      { "customer.phone": regex },
-    ];
+    andConditions.push({
+      $or: [
+        { orderNumber: regex },
+        { invoiceNumber: regex },
+        { "customer.name": regex },
+        { "customer.email": regex },
+        { "customer.phone": regex },
+        { "shippingAddress.email": regex },
+        { "shippingAddress.mobile": regex },
+      ],
+    });
   }
+
+  const query = andConditions.length > 0 ? { $and: andConditions } : {};
 
   const pageNum = parseInt(page, 10) || 1;
   const limitNum = parseInt(limit, 10) || 15;
@@ -2018,7 +2122,7 @@ const getStoreOrders = asyncHandler(async (req, res) => {
       path: "orderItems.imageInfo.photographer",
     })
     .populate("userInfo.user")
-    .populate("store", "name storeCode city state")
+    .populate("store", "name storeCode address phone email city state googleMapUrl")
     .populate("createdBy", "name email role")
     .sort({ createdAt: -1 })
     .skip(skip)

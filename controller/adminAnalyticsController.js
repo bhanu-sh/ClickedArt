@@ -800,7 +800,7 @@ const getAllPrintOrders = asyncHandler(async (req, res) => {
         ],
       })
       .populate("userInfo.user")
-      .populate("store", "name storeCode city state")
+      .populate("store", "name storeCode address phone email city state googleMapUrl")
       .sort({ createdAt: -1 })
       .skip((pageNumber - 1) * pageSize)
       .limit(pageSize),
